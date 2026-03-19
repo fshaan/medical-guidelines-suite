@@ -1,0 +1,69 @@
+{
+  "name": "medical-guidelines-suite",
+  "version": "2.0.0",
+  "description": "Medical Clinical Guidelines Knowledge Base Suite: Build, Query, and Batch Process. Builds structured knowledge bases from PDF/DOCX guidelines, provides intelligent cross-guideline retrieval, and generates batch patient recommendation reports (Excel + Word + PowerPoint).",
+  "author": "fshaaan",
+  "license": "MIT",
+  "homepage": "https://github.com/fshaaan/medical-guidelines-suite",
+  "keywords": [
+    "medical",
+    "guidelines",
+    "rag",
+    "knowledge-base",
+    "clinical",
+    "oncology",
+    "batch",
+    "report-generation",
+    "nccn",
+    "esmo",
+    "csco",
+    "healthcare"
+  ],
+  "sbom": {
+    "files": [
+      {"path": "SKILL.md", "required": true, "description": "Main skill definition (build + query + batch) with clawdis frontmatter"},
+      {"path": "CHANGELOG.md", "required": true, "description": "Version history following Keep a Changelog format"},
+      {"path": "HEARTBEAT.md", "required": false, "description": "Portable update check and maintenance workflow"},
+      {"path": "references/pdf_reading.md", "required": true, "description": "PDF processing guide for retrieval phase"},
+      {"path": "references/pdf_extraction.md", "required": true, "description": "PDF extraction methods for build phase"},
+      {"path": "references/docx_reading.md", "required": true, "description": "DOCX processing guide for retrieval phase"},
+      {"path": "references/docx_extraction.md", "required": true, "description": "DOCX extraction methods for build phase"},
+      {"path": "references/index_generation.md", "required": true, "description": "Guide for generating data_structure.md indices"},
+      {"path": "references/input_format.md", "required": true, "description": "Batch input Excel format specification (structured + narrative)"},
+      {"path": "templates/data_structure_root.md", "required": false, "description": "Template for root knowledge base index"},
+      {"path": "templates/data_structure_org.md", "required": false, "description": "Template for organization-specific index"},
+      {"path": "templates/report_template.pptx", "required": true, "description": "PowerPoint template with branded layouts for batch report slides"},
+      {"path": "scripts/extract_pdf.py", "required": false, "description": "PDF text extraction script using pdftotext"},
+      {"path": "scripts/extract_docx.py", "required": false, "description": "DOCX text extraction script using python-docx"},
+      {"path": "scripts/extract_all.py", "required": false, "description": "Batch extraction entry point for all guideline files"},
+      {"path": "scripts/batch_pipeline.py", "required": true, "description": "Batch patient pipeline: parse Excel input + generate xlsx/docx/pptx outputs"},
+      {"path": "examples/sample_queries.md", "required": false, "description": "Example clinical questions demonstrating skill usage"}
+    ]
+  },
+  "openclaw": {
+    "emoji": "🏥",
+    "category": "medical",
+    "requires": {
+      "bins": ["grep", "python3"],
+      "optional_bins": ["pdftotext"],
+      "pip": ["openpyxl", "python-docx", "python-pptx"]
+    },
+    "triggers": [
+      "指南推荐",
+      "治疗方案",
+      "临床决策",
+      "知识库构建",
+      "添加指南",
+      "批量推荐",
+      "患者列表",
+      "批量检索",
+      "guideline recommendations",
+      "treatment options",
+      "clinical decision support",
+      "build knowledge base",
+      "add new guidelines",
+      "batch recommendations",
+      "batch patient analysis"
+    ]
+  }
+}
