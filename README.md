@@ -111,6 +111,10 @@ medical-guidelines-suite/
 - `python-pptx` — PowerPoint generation
 - `pdftotext` (poppler) — PDF text extraction (optional, for build phase)
 
+## Acknowledgments
+
+This project was inspired by [ConardLi/rag-skill](https://github.com/ConardLi/rag-skill), which demonstrated the hierarchical index + progressive retrieval pattern for local knowledge bases using Claude Code Skills. We adopted and extended its core architectural ideas — `data_structure.md` layered indexing, grep-based search, and the "learn before process" constraint — into the medical guidelines domain, adding cross-guideline comparison, batch patient processing, and multi-format report generation.
+
 ## License
 
 MIT
