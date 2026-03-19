@@ -3,7 +3,7 @@
   "version": "2.0.0",
   "description": "Medical Clinical Guidelines Knowledge Base Suite: Build, Query, and Batch Process. Builds structured knowledge bases from PDF/DOCX guidelines, provides intelligent cross-guideline retrieval, and generates batch patient recommendation reports (Excel + Word + PowerPoint).",
   "author": "fshaan",
-  "license": "MIT",
+  "license": "CC-BY-NC-SA-4.0",
   "homepage": "https://github.com/fshaan/medical-guidelines-suite",
   "keywords": [
     "medical",
