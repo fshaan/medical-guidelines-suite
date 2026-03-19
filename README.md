@@ -7,14 +7,14 @@ Clinical guidelines knowledge base builder, retrieval engine, and batch patient 
 ### Option A: Claude Code Ecosystem Skill
 
 ```bash
-npx skills add fshaaan/medical-guidelines-suite -g -y
+npx skills add fshaan/medical-guidelines-suite -g -y
 ```
 
 ### Option B: Manual Installation
 
 ```bash
 # Clone to Claude Code skills directory
-git clone https://github.com/fshaaan/medical-guidelines-suite \
+git clone https://github.com/fshaan/medical-guidelines-suite \
   ~/.claude/skills/medical-guidelines-suite
 
 # Install Python dependencies

@@ -14,7 +14,7 @@ description: |
 
   INPUT: Clinical questions, guideline files, OR patient Excel files
   OUTPUT: ALWAYS in Simplified Chinese (简体中文)
-homepage: https://github.com/fshaaan/medical-guidelines-suite
+homepage: https://github.com/fshaan/medical-guidelines-suite
 clawdis:
   emoji: "🏥"
   category: "medical"
