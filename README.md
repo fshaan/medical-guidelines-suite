@@ -1,4 +1,4 @@
-# Medical Guidelines Suite v2.0.0
+# Medical Guidelines Suite v2.1.0
 
 Clinical guidelines knowledge base builder, retrieval engine, and batch patient report generator.
 
@@ -59,13 +59,22 @@ Ask Claude: "HER2阳性晚期胃癌一线治疗，各指南推荐什么？"
 # Parse patient Excel
 python scripts/batch_pipeline.py parse --input patients.xlsx --output Output/patients.json
 
-# (Claude runs RAG retrieval loop → Output/rag_results.json)
+# Split into batches (for 6+ patients, prevents LLM quality degradation)
+python scripts/batch_pipeline.py split --input Output/patients.json --batch-size 5
+
+# (Claude runs RAG retrieval loop per batch → Output/batches/rag_batch_*.json)
+
+# Merge batch results + validate quality
+python scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
+python scripts/batch_pipeline.py validate --input Output/rag_results.json --patients Output/patients.json
 
 # Generate reports
 python scripts/batch_pipeline.py generate --input Output/rag_results.json --format all
 ```
 
 Or simply ask Claude: "对 patients.xlsx 中的患者，批量检索指南推荐"
+
+For ≤5 patients, the skill processes directly without splitting. For 6+ patients, it automatically uses the batch pipeline with checkpoint recovery.
 
 ## Output Deliverables
 
@@ -98,7 +107,7 @@ medical-guidelines-suite/
 │   ├── extract_pdf.py          # PDF text extraction
 │   ├── extract_docx.py         # DOCX text extraction
 │   ├── extract_all.py          # Batch extraction
-│   └── batch_pipeline.py       # Batch patient pipeline
+│   └── batch_pipeline.py       # Batch patient pipeline (parse/split/merge/validate/generate)
 └── examples/
     └── sample_queries.md       # Example clinical questions
 ```

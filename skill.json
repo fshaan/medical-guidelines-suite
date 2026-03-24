@@ -36,7 +36,7 @@
       {"path": "scripts/extract_pdf.py", "required": false, "description": "PDF text extraction script using pdftotext"},
       {"path": "scripts/extract_docx.py", "required": false, "description": "DOCX text extraction script using python-docx"},
       {"path": "scripts/extract_all.py", "required": false, "description": "Batch extraction entry point for all guideline files"},
-      {"path": "scripts/batch_pipeline.py", "required": true, "description": "Batch patient pipeline: parse Excel input + generate xlsx/docx/pptx outputs"},
+      {"path": "scripts/batch_pipeline.py", "required": true, "description": "Batch patient pipeline: parse, split, merge, validate, generate (5 subcommands)"},
       {"path": "examples/sample_queries.md", "required": false, "description": "Example clinical questions demonstrating skill usage"}
     ]
   },
