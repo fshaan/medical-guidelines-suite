@@ -4,6 +4,9 @@
 
 子命令:
   parse    - 解析输入 xlsx → patients.json
+  split    - 将 patients.json 分成多个批次文件
+  merge    - 合并多个 rag_batch_*.json 为 rag_results.json
+  validate - 检查 rag_results.json 质量与完整性
   generate - 从 RAG 结果 JSON 生成 xlsx/docx/pptx 产出物
 """
 
@@ -163,6 +166,202 @@ def cmd_parse(args):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"已解析 {len(patients)} 位患者 → {output_path}")
+
+
+# ─── split 子命令 ─────────────────────────────────────────────────────────────
+
+
+def cmd_split(args):
+    """split 子命令入口 — 将 patients.json 分成多个批次文件"""
+    input_path = Path(args.input).resolve()
+    if not input_path.exists():
+        print(f"输入文件不存在: {input_path}", file=sys.stderr)
+        sys.exit(1)
+
+    data = json.loads(input_path.read_text(encoding="utf-8"))
+    patients = data.get("patients", [])
+    batch_size = args.batch_size
+
+    if not patients:
+        print("患者列表为空，无需分批", file=sys.stderr)
+        sys.exit(1)
+
+    output_dir = Path(args.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    batches = [patients[i:i + batch_size] for i in range(0, len(patients), batch_size)]
+
+    for idx, batch in enumerate(batches, 1):
+        batch_data = {
+            "input_format": data.get("input_format"),
+            "input_file": data.get("input_file"),
+            "parsed_at": data.get("parsed_at"),
+            "batch_index": idx,
+            "batch_count": len(batches),
+            "patient_count": len(batch),
+            "patients": batch,
+        }
+        batch_file = output_dir / f"batch_{idx:03d}.json"
+        batch_file.write_text(
+            json.dumps(batch_data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    print(f"已将 {len(patients)} 位患者分为 {len(batches)} 批（每批 {batch_size} 人）→ {output_dir}/")
+
+
+# ─── merge 子命令 ─────────────────────────────────────────────────────────────
+
+
+def cmd_merge(args):
+    """merge 子命令入口 — 合并多个 rag_batch_*.json 为 rag_results.json"""
+    input_dir = Path(args.input_dir).resolve()
+    batch_files = sorted(input_dir.glob("rag_batch_*.json"))
+
+    if not batch_files:
+        print(f"未找到批次结果文件 (rag_batch_*.json) → {input_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    all_results = []
+    patient_ids_seen = set()
+
+    for bf in batch_files:
+        batch_data = json.loads(bf.read_text(encoding="utf-8"))
+        for result in batch_data.get("results", []):
+            pid = result.get("patient_id")
+            if pid in patient_ids_seen:
+                print(f"  ⚠ 跳过重复患者: {pid} (来自 {bf.name})")
+                continue
+            patient_ids_seen.add(pid)
+
+            # 结构规范化：确保 consensus/differences 在 clinical_questions 内
+            for q in result.get("clinical_questions", []):
+                if "consensus" not in q:
+                    q["consensus"] = result.get("consensus", [])
+                if "differences" not in q:
+                    q["differences"] = result.get("differences", [])
+                if "guideline_results" not in q:
+                    q["guideline_results"] = result.get("guideline_results", [])
+            # 清理根级别的冗余字段（规范化后不再需要）
+            for key in ("consensus", "differences", "guideline_results"):
+                result.pop(key, None)
+
+            all_results.append(result)
+
+    merged = {
+        "generated_at": str(date.today()),
+        "patient_count": len(all_results),
+        "source_batches": [bf.name for bf in batch_files],
+        "results": all_results,
+    }
+
+    output_path = Path(args.output).resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(f"已合并 {len(batch_files)} 个批次，{len(all_results)} 位患者 → {output_path}")
+
+
+# ─── validate 子命令 ──────────────────────────────────────────────────────────
+
+
+def cmd_validate(args):
+    """validate 子命令入口 — 检查 rag_results.json 质量与完整性"""
+    input_path = Path(args.input).resolve()
+    if not input_path.exists():
+        print(f"文件不存在: {input_path}", file=sys.stderr)
+        sys.exit(1)
+
+    data = json.loads(input_path.read_text(encoding="utf-8"))
+    results = data.get("results", [])
+
+    errors = []
+    warnings = []
+
+    # 与 patients.json 对比完整性
+    if args.patients:
+        patients_path = Path(args.patients).resolve()
+        if patients_path.exists():
+            patients_data = json.loads(patients_path.read_text(encoding="utf-8"))
+            expected_ids = {p["patient_id"] for p in patients_data.get("patients", [])}
+            actual_ids = {r.get("patient_id") for r in results}
+            missing = expected_ids - actual_ids
+            extra = actual_ids - expected_ids
+            if missing:
+                errors.append(f"缺失患者 ({len(missing)}): {', '.join(sorted(missing))}")
+            if extra:
+                warnings.append(f"多余患者 ({len(extra)}): {', '.join(sorted(extra))}")
+
+    # 逐患者检查
+    rec_lengths = []
+    for r in results:
+        pid = r.get("patient_id", "?")
+
+        # 必要字段
+        for field in ("diagnosis_summary", "clinical_questions", "disease_type"):
+            if not r.get(field):
+                errors.append(f"[{pid}] 缺失字段: {field}")
+
+        questions = r.get("clinical_questions", [])
+        if not questions:
+            errors.append(f"[{pid}] 无临床问题")
+            rec_lengths.append((pid, 0))
+            continue
+
+        total_len = 0
+        for qi, q in enumerate(questions, 1):
+            grs = q.get("guideline_results", [])
+            if not grs:
+                warnings.append(f"[{pid}] Q{qi} 无指南检索结果")
+
+            for g in grs:
+                rec = g.get("recommendation", "")
+                total_len += len(rec)
+                if len(rec) < 50:
+                    warnings.append(
+                        f"[{pid}] Q{qi} {g.get('guideline', '')} 推荐过短 ({len(rec)}字)"
+                    )
+                if not g.get("evidence_level"):
+                    warnings.append(
+                        f"[{pid}] Q{qi} {g.get('guideline', '')} 缺失证据等级"
+                    )
+                if not g.get("source_file"):
+                    warnings.append(
+                        f"[{pid}] Q{qi} {g.get('guideline', '')} 缺失来源文件"
+                    )
+
+            if not q.get("consensus"):
+                warnings.append(f"[{pid}] Q{qi} 缺失共识分析")
+            if not q.get("differences"):
+                warnings.append(f"[{pid}] Q{qi} 缺失差异分析")
+
+        rec_lengths.append((pid, total_len))
+
+    # 跨患者一致性：检测质量下降
+    if len(rec_lengths) >= 3:
+        lengths = [l for _, l in rec_lengths if l > 0]
+        if lengths:
+            avg_len = sum(lengths) / len(lengths)
+            for pid, length in rec_lengths:
+                if length > 0 and length < avg_len * 0.3:
+                    warnings.append(
+                        f"[{pid}] 推荐总长度异常偏短 ({length}字 vs 平均 {avg_len:.0f}字)"
+                    )
+
+    # 输出报告
+    print(f"验证结果: {len(results)} 位患者")
+    if errors:
+        print(f"\n  ✗ {len(errors)} 个错误:")
+        for e in errors:
+            print(f"    ✗ {e}")
+    if warnings:
+        print(f"\n  ⚠ {len(warnings)} 个警告:")
+        for w in warnings:
+            print(f"    ⚠ {w}")
+    if not errors and not warnings:
+        print(f"  ✓ 验证通过，数据完整")
+
+    sys.exit(1 if errors else 0)
 
 
 # ─── generate 子命令 ──────────────────────────────────────────────────────────
@@ -708,6 +907,22 @@ def main():
     p_parse.add_argument("--input", required=True, help="输入 xlsx 文件路径")
     p_parse.add_argument("--output", default="Output/patients.json", help="输出 JSON 路径")
 
+    # split
+    p_split = sub.add_parser("split", help="将 patients.json 分成多个批次文件")
+    p_split.add_argument("--input", required=True, help="patients.json 路径")
+    p_split.add_argument("--batch-size", type=int, default=5, help="每批患者数 (默认 5)")
+    p_split.add_argument("--output-dir", default="Output/batches", help="批次文件输出目录")
+
+    # merge
+    p_merge = sub.add_parser("merge", help="合并批次结果为 rag_results.json")
+    p_merge.add_argument("--input-dir", required=True, help="批次结果所在目录")
+    p_merge.add_argument("--output", default="Output/rag_results.json", help="合并输出路径")
+
+    # validate
+    p_validate = sub.add_parser("validate", help="验证 RAG 结果质量与完整性")
+    p_validate.add_argument("--input", required=True, help="rag_results.json 路径")
+    p_validate.add_argument("--patients", help="patients.json 路径（可选，用于完整性对比）")
+
     # generate
     p_gen = sub.add_parser("generate", help="从 RAG 结果生成产出物")
     p_gen.add_argument("--input", required=True, help="RAG 结果 JSON 路径")
@@ -718,6 +933,12 @@ def main():
     args = parser.parse_args()
     if args.command == "parse":
         cmd_parse(args)
+    elif args.command == "split":
+        cmd_split(args)
+    elif args.command == "merge":
+        cmd_merge(args)
+    elif args.command == "validate":
+        cmd_validate(args)
     elif args.command == "generate":
         cmd_generate(args)
 

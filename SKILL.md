@@ -1,6 +1,6 @@
 ---
 name: medical-guidelines-suite
-version: 2.0.0
+version: 2.1.0
 description: |
   Medical Clinical Guidelines Knowledge Suite - Build, Query & Batch Process.
 
@@ -1179,20 +1179,137 @@ Uses `templates/report_template.pptx` with branded layouts:
 
 ## 7. Execution Workflow
 
+### Step 1: Environment Check
+
 ```bash
-# Step 1: Environment check
+# Verify venv and dependencies
 .venv/bin/python3 -c "import openpyxl, docx, pptx; print('OK')"
-mkdir -p Output/reports
+# Create output directories
+mkdir -p Output/reports Output/batches
+```
 
-# Step 2: Parse input
-python scripts/batch_pipeline.py parse --input <xlsx> --output Output/patients.json
+If dependencies are missing, install: `.venv/bin/pip install openpyxl python-docx python-pptx`
 
-# Step 3: RAG retrieval loop (Claude executes per-patient)
-# → Write Output/rag_results.json
+### Step 2: Parse Input
 
-# Step 4: Generate outputs
+```bash
+python scripts/batch_pipeline.py parse --input <user_xlsx> --output Output/patients.json
+```
+
+Read `Output/patients.json` to confirm patient count N.
+
+### Step 3: Determine Processing Mode
+
+- **N ≤ 5**: Direct mode — process all patients in one pass (same as legacy behavior, skip to Step 3A)
+- **N > 5**: Batch mode — split into batches of 5 (proceed to Step 3B)
+
+User can override batch size: "每批 3 人" → `--batch-size 3`
+
+#### Step 3A: Direct Mode (N ≤ 5)
+
+Read `$KB_ROOT/data_structure.md` once.
+
+For each patient in `patients.json`:
+- Extract clinical dimensions (from structured fields or narrative text)
+- Execute the 4-step inference (disease diagnosis → scenario → molecular → special)
+- Run the retrieval loop
+- Accumulate results in memory
+- Report progress after each patient
+
+Use the Write tool to save all results to `Output/rag_results.json`. Then skip to Step 5.
+
+#### Step 3B: Batch Mode (N > 5)
+
+**Split patients into batches:**
+
+```bash
+python scripts/batch_pipeline.py split --input Output/patients.json --batch-size 5 --output-dir Output/batches/
+```
+
+Report to user: "已将 N 位患者分为 M 批（每批 5 人），开始逐批检索。"
+
+**Check for existing checkpoints (resume support):**
+
+```bash
+ls Output/batches/rag_batch_*.json 2>/dev/null
+```
+
+If checkpoint files exist and are valid JSON with non-empty `results`, skip those batches.
+
+**Process each incomplete batch:**
+
+For each `Output/batches/batch_NNN.json` that has no corresponding `rag_batch_NNN.json`:
+
+1. Read `Output/batches/batch_NNN.json` to get this batch's patient list
+2. Read `$KB_ROOT/data_structure.md` (**re-read every batch** to refresh context)
+3. For each patient in this batch:
+   - Execute the 4-step clinical question inference
+   - Run the RAG retrieval loop
+   - Accumulate this batch's results in memory
+4. Use the Write tool to save this batch's results to `Output/batches/rag_batch_NNN.json`
+5. Report progress: "已完成第 NNN 批（X/M 批），共 Y/N 位患者"
+
+<HARD_CONSTRAINT>
+
+### Batch Context Isolation Rules
+
+When processing batches, the following rules are **mandatory** to prevent quality degradation:
+
+1. **No cross-batch references**: Never reference, quote, or summarize results from previous batches when processing a new batch. Each batch starts fresh.
+2. **No shorthand**: Never use phrases like "与前面患者类似", "同上", "参考前述" — every patient gets independently inferred clinical questions and independently executed grep searches.
+3. **Re-read the root index**: Read `$KB_ROOT/data_structure.md` at the start of **every** batch, not just the first one.
+4. **Write then release**: After writing `rag_batch_NNN.json`, that batch's data is no longer needed for subsequent batches. Do not carry it forward in reasoning.
+5. **Equal depth**: Later batches must receive the same search depth (number of keywords, number of guidelines checked, context lines read) as earlier batches.
+
+</HARD_CONSTRAINT>
+
+### Step 4: Merge and Validate
+
+```bash
+# Merge all batch results into unified rag_results.json
+python scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
+
+# Validate completeness and quality
+python scripts/batch_pipeline.py validate --input Output/rag_results.json --patients Output/patients.json
+```
+
+If validate reports errors (missing patients, empty fields), inform the user and suggest re-running specific batches. If validate reports only warnings (short recommendations, missing consensus), note them but proceed.
+
+### Step 5: Generate Outputs
+
+```bash
 python scripts/batch_pipeline.py generate --input Output/rag_results.json --format all
 ```
+
+### Step 6: Verify and Report
+
+Confirm all output files exist and report completion:
+
+```markdown
+## 批量推荐完成
+
+| 项目 | 状态 |
+|------|------|
+| 患者总数 | N |
+| 处理模式 | 直接模式 / 分批模式（M 批） |
+| 成功检索 | K |
+| 汇总表 | Output/批量推荐汇总表.xlsx ✓ |
+| 推荐意见书 | Output/reports/ (K 份) ✓ |
+| 幻灯片 | Output/批量推荐幻灯片.pptx ✓ |
+| 质量验证 | ✓ 通过 / ⚠ N 个警告 |
+```
+
+### Checkpoint Recovery
+
+When batch processing is interrupted (network failure, session timeout, etc.), the user can resume by re-triggering the batch skill:
+
+1. Detect existing `Output/batches/rag_batch_*.json` checkpoint files
+2. Validate each checkpoint (valid JSON + non-empty `results` + patient IDs match the batch file)
+3. Skip validated batches
+4. Resume from the next incomplete batch
+5. After all batches complete, run merge + validate as normal
+
+Report on resume: "检测到已完成 X/M 批（Y 位患者），从第 Z 批继续处理。"
 
 ---
 
@@ -1206,4 +1323,4 @@ python scripts/batch_pipeline.py generate --input Output/rag_results.json --form
 
 ---
 
-*Last Updated: 2026-03-19*
+*Last Updated: 2026-03-24*

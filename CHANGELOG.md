@@ -5,6 +5,21 @@ All notable changes to the Medical Guidelines Suite will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-03-24
+
+### Added
+- **Batch quality assurance pipeline** for large patient sets (30+)
+  - `split` subcommand: splits patients.json into batches (default 5 per batch)
+  - `merge` subcommand: combines batch results with deduplication and structure normalization
+  - `validate` subcommand: checks completeness, field quality, recommendation length, cross-patient consistency
+- **Checkpoint recovery**: interrupted batch processing can resume from last completed batch
+- **Batch context isolation rules** (HARD_CONSTRAINT) to prevent LLM output quality degradation
+- Automatic processing mode selection: direct (N≤5) vs batch (N>5)
+
+### Changed
+- Execution workflow (Section 7/8) rewritten with split → batch → merge → validate → generate pipeline
+- batch_pipeline.py now has 5 subcommands: parse, split, merge, validate, generate
+
 ## [2.0.0] - 2026-03-19
 
 ### Added
