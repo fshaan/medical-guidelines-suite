@@ -641,6 +641,96 @@ def _extract_from_narrative(text: str, features: dict):
         features["special_keywords"].extend(["高龄", "elderly"])
 
 
+def estimate_tokens(text: str) -> int:
+    """粗略估算 token 数（中英文混合按 1 token ≈ 4 字符）"""
+    return len(text) // 4
+
+
+def generate_batch_prompt(
+    batch: list[dict],
+    kb_profile: dict,
+    kb_root: str,
+    batch_idx: int,
+    total_batches: int,
+    output_file: str = "",
+) -> str:
+    """生成自包含的批次 prompt 文件内容。"""
+    lines = []
+
+    lines.append(f"# 批次 {batch_idx:03d}/{total_batches:03d} 检索任务\n")
+    lines.append("<CONTEXT_RESET>")
+    lines.append("请忽略此消息之前的所有检索结果和患者信息。")
+    lines.append("以下是一个全新的、独立的批次任务，从零开始处理。")
+    lines.append("不得引用或参考任何其他批次的结果。")
+    lines.append('不得使用"同上"、"与前面类似"、"参考前述"等表述。')
+    lines.append("</CONTEXT_RESET>\n")
+
+    lines.append("<MANDATORY_RULES>")
+    lines.append("1. 必须逐条执行以下所有 grep 命令，不得跳过任何组织")
+    lines.append("2. 每位患者的每个指南组织都必须有检索结果")
+    lines.append('3. 如果某指南未涉及该问题，记录: "该指南未涉及此临床问题"')
+    lines.append("4. 输出必须为简体中文")
+    lines.append("5. 可以补充脚本未生成的关键词，但不得删减已有的 grep 命令")
+    lines.append("</MANDATORY_RULES>\n")
+
+    lines.append(f"## 知识库\n路径: {kb_root}\n")
+    lines.append("根索引:\n---")
+    lines.append(kb_profile.get("root_index_content", ""))
+    lines.append("---\n")
+
+    lines.append(f"## 患者列表（本批次 {len(batch)} 人）\n")
+
+    for pi, patient in enumerate(batch, 1):
+        pid = patient.get("patient_id", "?")
+        pname = patient.get("patient_name", "?")
+        features = patient.get("features", {})
+        grep_cmds = patient.get("grep_commands", [])
+
+        lines.append(f"### 患者 {pi}: {pname} ({pid})\n")
+
+        lines.append("**临床信息:**")
+        for k, v in patient.items():
+            if k in ("features", "grep_commands") or v is None:
+                continue
+            lines.append(f"- {k}: {v}")
+
+        confidence = features.get("confidence", "high")
+        lines.append(f"\n**脚本提取置信度**: {confidence}")
+        if confidence == "low":
+            lines.append("⚠ 该患者信息稀疏，请从临床叙述中补充推断关键词并扩展检索范围。")
+
+        lines.append("\n**脚本提取的关键词:**")
+        for dim_key in sorted(features.keys()):
+            if dim_key.endswith("_keywords") and dim_key != "all_keywords":
+                kws = features[dim_key]
+                if kws:
+                    dim_name = dim_key.replace("_keywords", "")
+                    lines.append(f"- {dim_name}: {', '.join(kws)}")
+
+        if grep_cmds:
+            lines.append(f"\n#### 必须执行的 grep 命令（共 {len(grep_cmds)} 条，不得跳过）\n")
+            current_org = None
+            cmd_num = 0
+            for gc in grep_cmds:
+                if gc["org"] != current_org:
+                    current_org = gc["org"]
+                    lines.append(f"**{current_org}（必须）:**")
+                cmd_num += 1
+                lines.append(f"{cmd_num}. {gc['command']}")
+
+        lines.append("\n#### LLM 补充检索空间")
+        lines.append("如果在上述 grep 结果中发现需要进一步深入的线索，")
+        lines.append("可补充执行额外的 grep 命令（限同一知识库范围内）。\n")
+
+    lines.append("## 输出要求\n")
+    lines.append(f"- 文件路径: {output_file}")
+    lines.append("- 格式: JSON")
+    lines.append("- 每个 guideline_results 条目必须包含: guideline, version, recommendation, evidence_level, source_file, source_lines")
+    lines.append("- 输出语言: 简体中文")
+
+    return "\n".join(lines)
+
+
 # ─── merge 子命令 ─────────────────────────────────────────────────────────────
 
 
