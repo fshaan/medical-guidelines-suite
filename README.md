@@ -1,4 +1,4 @@
-# Medical Guidelines Suite v2.1.0
+# Medical Guidelines Suite v2.2.0
 
 Clinical guidelines knowledge base builder, retrieval engine, and batch patient report generator.
 
@@ -59,10 +59,11 @@ Ask Claude: "HER2阳性晚期胃癌一线治疗，各指南推荐什么？"
 # Parse patient Excel
 python scripts/batch_pipeline.py parse --input patients.xlsx --output Output/patients.json
 
-# Split into batches (for 6+ patients, prevents LLM quality degradation)
-python scripts/batch_pipeline.py split --input Output/patients.json --batch-size 5
+# Orchestrate: auto-scan KB, extract features, generate grep commands + batch prompts
+python scripts/batch_pipeline.py orchestrate \
+  --patients Output/patients.json --kb-root ./guidelines --batch-size 5
 
-# (Claude runs RAG retrieval loop per batch → Output/batches/rag_batch_*.json)
+# (Claude executes each batch prompt → Output/batches/rag_batch_*.json)
 
 # Merge batch results + validate quality
 python scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
@@ -74,7 +75,7 @@ python scripts/batch_pipeline.py generate --input Output/rag_results.json --form
 
 Or simply ask Claude: "对 patients.xlsx 中的患者，批量检索指南推荐"
 
-For ≤5 patients, the skill processes directly without splitting. For 6+ patients, it automatically uses the batch pipeline with checkpoint recovery.
+The `orchestrate` command replaces manual splitting — it automatically scans the knowledge base, extracts 9 clinical dimensions from each patient, and generates self-contained batch prompts with pre-built grep commands. Supports checkpoint recovery for interrupted processing.
 
 ## Output Deliverables
 
@@ -107,7 +108,12 @@ medical-guidelines-suite/
 │   ├── extract_pdf.py          # PDF text extraction
 │   ├── extract_docx.py         # DOCX text extraction
 │   ├── extract_all.py          # Batch extraction
-│   └── batch_pipeline.py       # Batch patient pipeline (parse/split/merge/validate/generate)
+│   └── batch_pipeline.py       # Batch patient pipeline (parse/split/orchestrate/merge/validate/generate)
+├── tests/                      # pytest test suite (51 tests)
+├── docs/
+│   ├── v2.2-fix-plan.md       # v2.2 design spec
+│   ├── v2.2-decisions.md      # Confirmed design decisions (D1-D9)
+│   └── architecture.md        # Engineering review report
 └── examples/
     └── sample_queries.md       # Example clinical questions
 ```

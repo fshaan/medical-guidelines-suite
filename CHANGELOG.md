@@ -5,6 +5,23 @@ All notable changes to the Medical Guidelines Suite will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-03-25
+
+### Added
+- **`orchestrate` subcommand** — deterministic batch processing that auto-scans the knowledge base, extracts 9 clinical dimensions per patient, and pre-generates all grep commands and self-contained batch prompts
+- **Three-layer batch isolation**: CONTEXT_RESET text instructions + validate cross-batch similarity detection (Jaccard > 0.8) + SKILL.md HARD_CONSTRAINT rules
+- **Organization coverage check** in validate: detects when guideline results miss known organizations
+- **Patient name sorting** in generate: outputs ordered by pinyin approximation
+- **51 pytest tests** covering all new orchestrate functions
+- Design decision documentation (`docs/v2.2-decisions.md`) and engineering review (`docs/architecture.md`)
+
+### Changed
+- SKILL.md Step 3 rewritten: all batch processing now uses orchestrate-driven workflow (no more direct/batch mode split)
+- 2 new HARD_CONSTRAINTs: execution mode constraints (no subagents, no custom scripts) + full-coverage retrieval rules
+- 7 new Forbidden Actions for batch processing discipline
+- validate now accepts `--kb-profile` for organization coverage checking
+- batch_pipeline.py now has 7 subcommands: parse, split, orchestrate, merge, validate, generate
+
 ## [2.1.0] - 2026-03-24
 
 ### Added
