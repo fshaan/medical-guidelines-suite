@@ -12,6 +12,8 @@
 
 import argparse
 import json
+import os
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -214,6 +216,35 @@ def cmd_split(args):
         )
 
     print(f"已将 {len(patients)} 位患者分为 {len(batches)} 批（每批 {batch_size} 人）→ {output_dir}/")
+
+
+# ─── orchestrate 子命令 ──────────────────────────────────────────────────────
+
+
+def resolve_kb_root(explicit_path: str | None) -> Path:
+    """按优先级解析知识库根路径。
+
+    优先级: --kb-root > MEDICAL_GUIDELINES_DIR > ./guidelines/ > ./knowledge/
+    验证: 目标路径下存在 data_structure.md
+    """
+    candidates = []
+
+    if explicit_path:
+        candidates.append(Path(explicit_path).resolve())
+    else:
+        env = os.environ.get("MEDICAL_GUIDELINES_DIR")
+        if env:
+            candidates.append(Path(env).resolve())
+        candidates.append(Path("guidelines").resolve())
+        candidates.append(Path("knowledge").resolve())
+
+    for p in candidates:
+        if p.is_dir() and (p / "data_structure.md").exists():
+            return p
+
+    tried = ", ".join(str(c) for c in candidates)
+    print(f"无法找到知识库（需含 data_structure.md）。已尝试: {tried}", file=sys.stderr)
+    sys.exit(1)
 
 
 # ─── merge 子命令 ─────────────────────────────────────────────────────────────
