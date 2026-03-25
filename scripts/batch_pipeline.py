@@ -370,6 +370,80 @@ def _parse_clinical_question_map(text: str) -> dict:
     return cq_map
 
 
+# grep 特殊字符转义
+_GREP_SPECIAL = re.compile(r'([\[\]().*+?{}\\^$|])')
+
+
+def escape_grep_keyword(keyword: str) -> list[str]:
+    """转义 grep 特殊字符，含括号时额外生成去括号变体 (D4)。
+
+    Returns: 1-2 个转义后的关键词列表
+    """
+    escaped = _GREP_SPECIAL.sub(r'\\\1', keyword)
+    variants = [escaped]
+
+    # D4: 含括号时生成去括号变体
+    if "(" in keyword or "[" in keyword:
+        stripped = re.sub(r'[()[\]]', '', keyword)
+        tokens = [t for t in re.split(r'[^\w\u4e00-\u9fff]+', stripped) if t]
+        if len(tokens) >= 2:
+            variant = ".*".join(_GREP_SPECIAL.sub(r'\\\1', t) for t in tokens)
+            variants.append(variant)
+
+    return variants
+
+
+def generate_grep_commands(
+    patient_features: dict,
+    kb_profile: dict,
+    kb_root: "Path",
+) -> list[dict]:
+    """为一位患者生成覆盖所有 org 的 grep 命令。
+
+    按临床维度合并关键词到单条 grep（用 \\| 分隔），减少命令数。
+    返回: [{"org": str, "dimension": str, "command": str}, ...]
+    """
+    all_kw = patient_features.get("all_keywords", [])
+    if not all_kw:
+        return []
+
+    dimensions = {}
+    for key, val in patient_features.items():
+        if key == "all_keywords" or not val:
+            continue
+        if key.endswith("_keywords"):
+            dim_name = key.replace("_keywords", "")
+            dimensions[dim_name] = val
+
+    if not dimensions:
+        dimensions["general"] = all_kw
+
+    commands = []
+    for org in kb_profile["orgs"]:
+        files = kb_profile["org_files"].get(org, [])
+        if not files:
+            continue
+        glob_pattern = str(kb_root / org / "extracted" / "*.txt")
+
+        for dim_name, keywords in dimensions.items():
+            all_variants = []
+            for kw in keywords:
+                all_variants.extend(escape_grep_keyword(kw))
+
+            if not all_variants:
+                continue
+
+            pattern = "\\|".join(all_variants)
+            cmd = f'grep -n -i "{pattern}" {glob_pattern}'
+            commands.append({
+                "org": org,
+                "dimension": dim_name,
+                "command": cmd,
+            })
+
+    return commands
+
+
 # ─── merge 子命令 ─────────────────────────────────────────────────────────────
 
 
