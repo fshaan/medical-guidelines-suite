@@ -5,6 +5,26 @@ All notable changes to the Medical Guidelines Suite will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-03-25
+
+### Added
+- **`verify-batch` subcommand** — post-hoc verification of LLM batch execution evidence before merge
+  - V1: command coverage check (prompt CMD-IDs vs JSON execution_log)
+  - V2: count consistency check (claimed vs actual command counts)
+  - V3: snippet authenticity check (first_match_snippet verified against knowledge base files)
+  - V4: zero-match contradiction detection (match_count=0 with substantial recommendations)
+- **Batch depth decay detection** in validate — detects when later batches have significantly less search evidence than earlier ones (front-half vs back-half comparison + consecutive 3-batch monotonic decrease)
+- **CMD-ID numbering** in batch prompts — each grep command gets a unique `CMD-P{n}-{org}-{seq}` identifier
+- **Per-patient checkpoints** in batch prompts — execution_summary verification points after each patient's grep commands
+- **execution_log JSON schema** in batch prompt output requirements — complete example with cmd_id, match_count, first_match_snippet
+- **19 new pytest tests** (70 total) covering prompt hardening, verify-batch, and depth decay detection
+
+### Changed
+- batch_pipeline.py now has 8 subcommands (added verify-batch)
+- Batch workflow: verify-batch required between LLM execution and merge step
+- SKILL.md updated with execution evidence recording rules and 3 new Forbidden Actions
+- Prompt "补充检索" section tightened: supplemental grep only after all CMD-* commands complete
+
 ## [2.2.0] - 2026-03-25
 
 ### Added
