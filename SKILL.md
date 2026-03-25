@@ -1249,14 +1249,28 @@ python scripts/batch_pipeline.py orchestrate \
 
 1. 读取 `batch_NNN_prompt.md`
    — 注意开头的 `<CONTEXT_RESET>` 指令，清除前批上下文
-2. 按 prompt 中的 grep 命令逐条执行（不得跳过）
-3. 可补充额外 grep（基于已有结果中的线索）
-4. 提取推荐、证据等级、来源信息
-5. 生成共识/差异分析
-6. 写入 `rag_batch_NNN.json`
-7. 报告进度: "已完成第 NNN 批（X/M 批），共 Y/N 位患者"
+2. 按 prompt 中的 grep 命令逐条执行（不得跳过），每条命令标记为 `CMD-P{n}-{org}-{seq}`
+3. 每条 grep 执行后，记录 `cmd_id`、`match_count`、`first_match_snippet`（≥30字）到 `execution_log`
+4. 可补充额外 grep（基于已有结果中的线索），补充命令不需要 CMD-ID
+5. 提取推荐、证据等级、来源信息
+6. 生成共识/差异分析
+7. 写入 `rag_batch_NNN.json`（必须包含 `execution_log` 和 `execution_summary`）
+8. 报告进度: "已完成第 NNN 批（X/M 批），共 Y/N 位患者"
 
-完成后执行 `orchestration_plan.json` 中 `next_steps` 的命令。
+完成所有批次后，先验证执行证据再合并：
+
+```bash
+python scripts/batch_pipeline.py verify-batch \
+  --input-dir Output/batches/ --kb-root $KB_ROOT
+```
+
+如果 verify-batch 报 FAIL：
+- 提示用户哪些批次需要重新执行
+- 删除失败批次的 `rag_batch_NNN.json`
+- 重新读取对应的 `batch_NNN_prompt.md` 并从零执行
+- 重新运行 verify-batch 确认通过
+
+verify-batch 全部 PASS 后，执行 `orchestration_plan.json` 中 `next_steps` 的命令。
 
 <HARD_CONSTRAINT>
 
@@ -1269,6 +1283,7 @@ When processing batches, the following rules are **mandatory** to prevent qualit
 3. **Re-read the root index**: Read `$KB_ROOT/data_structure.md` at the start of **every** batch, not just the first one.
 4. **Write then release**: After writing `rag_batch_NNN.json`, that batch's data is no longer needed for subsequent batches. Do not carry it forward in reasoning.
 5. **Equal depth**: Later batches must receive the same search depth (number of keywords, number of guidelines checked, context lines read) as earlier batches.
+6. **Record execution evidence**: Every grep command (CMD-*) must have its match_count and first_match_snippet recorded in the execution_log of the corresponding guideline_results entry.
 
 </HARD_CONSTRAINT>
 
@@ -1336,6 +1351,9 @@ Report on resume: "检测到已完成 X/M 批（Y 位患者），从第 Z 批继
 - **Never skip any grep command** from the prompt
 - **Never skip any org's** search results
 - **Never ignore patient clinical features** in search
+- **Never omit execution_log** from guideline_results output
+- **Never omit execution_summary** from patient results
+- **Never fabricate first_match_snippet** — it must be the actual text from grep output
 
 ---
 
