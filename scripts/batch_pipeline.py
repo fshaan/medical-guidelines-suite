@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import locale
 import os
 import re
 import sys
@@ -1124,6 +1125,18 @@ def cmd_validate(args):
 # ─── generate 子命令 ──────────────────────────────────────────────────────────
 
 
+def _sort_results_by_name(results: list[dict]) -> list[dict]:
+    """按患者姓名排序（使用 locale.strxfrm，中文环境下近似拼音序）"""
+    try:
+        locale.setlocale(locale.LC_COLLATE, "zh_CN.UTF-8")
+    except locale.Error:
+        try:
+            locale.setlocale(locale.LC_COLLATE, "")
+        except locale.Error:
+            pass
+    return sorted(results, key=lambda r: locale.strxfrm(r.get("patient_name", "")))
+
+
 def load_rag_results(path: Path) -> dict:
     """加载 RAG 结果 JSON"""
     text = path.read_text(encoding="utf-8")
@@ -1635,6 +1648,10 @@ def cmd_generate(args):
     data = load_rag_results(input_path)
     patient_count = data.get("patient_count", len(data.get("results", [])))
     print(f"加载 RAG 结果: {patient_count} 位患者\n")
+
+    # 按姓名音序排列 (§1.7)
+    if data.get("results"):
+        data["results"] = _sort_results_by_name(data["results"])
 
     output_dir = Path(args.output_dir).resolve()
     fmt = args.format
