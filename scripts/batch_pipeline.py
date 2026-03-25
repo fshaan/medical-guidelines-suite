@@ -1092,6 +1092,164 @@ def _verify_snippet(snippet: str, source_file: str, kb_root: str) -> bool:
     return False
 
 
+def _verify_batch_results(
+    prompt_text: str,
+    batch_data: dict,
+    kb_root: str = "",
+) -> tuple:
+    """验证单个批次的执行证据。
+
+    Returns: (errors: list[str], warnings: list[str])
+    """
+    errors = []
+    warnings = []
+
+    # 从 prompt 提取所有 CMD-ID
+    prompt_cmds = _parse_prompt_commands(prompt_text)
+    prompt_cmd_ids = {c["cmd_id"] for c in prompt_cmds}
+
+    # 按患者分组 prompt 命令数
+    patient_prompt_counts = {}
+    for c in prompt_cmds:
+        pi = c["patient_index"]
+        patient_prompt_counts[pi] = patient_prompt_counts.get(pi, 0) + 1
+
+    # 从 JSON 提取所有 execution_log 中的 CMD-ID
+    json_cmd_ids = set()
+    json_cmd_details = {}  # cmd_id -> {match_count, snippet, org}
+
+    for result in batch_data.get("results", []):
+        pid = result.get("patient_id", "?")
+
+        # V2: 计数一致性 — 通过 execution_log 中的 CMD-ID 前缀推断 patient_index
+        exec_summary = result.get("execution_summary", {})
+        claimed_prompt_count = exec_summary.get("total_commands_in_prompt", 0)
+
+        # 从该患者的 execution_log 中提取 CMD-ID 前缀来确定 patient_index
+        patient_cmd_ids = []
+        for q in result.get("clinical_questions", []):
+            for gr in q.get("guideline_results", []):
+                for entry in gr.get("execution_log", []):
+                    patient_cmd_ids.append(entry.get("cmd_id", ""))
+
+        patient_idx = None
+        if patient_cmd_ids:
+            m = re.match(r'CMD-P(\d+)-', patient_cmd_ids[0])
+            if m:
+                patient_idx = int(m.group(1))
+
+        if patient_idx is not None:
+            actual_prompt_count = patient_prompt_counts.get(patient_idx, 0)
+            if actual_prompt_count > 0 and claimed_prompt_count != actual_prompt_count:
+                errors.append(
+                    f"[{pid}] total_commands_in_prompt={claimed_prompt_count} "
+                    f"但 prompt 实际有 {actual_prompt_count} 条命令"
+                )
+
+        for q in result.get("clinical_questions", []):
+            for gr in q.get("guideline_results", []):
+                org = gr.get("guideline", "")
+                rec = gr.get("recommendation", "")
+
+                for entry in gr.get("execution_log", []):
+                    cmd_id = entry.get("cmd_id", "")
+                    json_cmd_ids.add(cmd_id)
+                    json_cmd_details[cmd_id] = {
+                        "match_count": entry.get("match_count", 0),
+                        "snippet": entry.get("first_match_snippet", ""),
+                        "org": org,
+                        "recommendation": rec,
+                        "source_file": gr.get("source_file", ""),
+                        "patient_id": pid,
+                    }
+
+    # V1: 命令覆盖率
+    missing_cmds = prompt_cmd_ids - json_cmd_ids
+    for cmd_id in sorted(missing_cmds):
+        errors.append(f"{cmd_id} 未在 execution_log 中找到")
+
+    # V3: snippet 真实性（需要 kb_root）
+    if kb_root:
+        for cmd_id, detail in json_cmd_details.items():
+            snippet = detail["snippet"]
+            source_file = detail["source_file"]
+            if snippet and source_file:
+                if not _verify_snippet(snippet, source_file, kb_root):
+                    errors.append(
+                        f"[{detail['patient_id']}] snippet \"{snippet[:40]}...\" "
+                        f"在 {source_file} 中未找到"
+                    )
+
+    # V4: 空匹配矛盾
+    for cmd_id, detail in json_cmd_details.items():
+        if detail["match_count"] == 0 and len(detail["recommendation"]) > 50:
+            warnings.append(
+                f"[{detail['patient_id']}] {cmd_id} match_count=0 "
+                f"但 {detail['org']} 有推荐内容 ({len(detail['recommendation'])}字)"
+            )
+
+    return errors, warnings
+
+
+def cmd_verify_batch(args):
+    """verify-batch 子命令入口 — 验证批次执行证据的真实性"""
+    input_dir = Path(args.input_dir).resolve()
+    kb_root = ""
+    if hasattr(args, 'kb_root') and args.kb_root:
+        kb_root = str(resolve_kb_root(args.kb_root))
+
+    batch_files = sorted(input_dir.glob("rag_batch_*.json"))
+
+    if not batch_files:
+        print(f"未找到批次结果文件: {input_dir}/rag_batch_*.json", file=sys.stderr)
+        sys.exit(1)
+
+    total_pass = 0
+    total_fail = 0
+    total_warn = 0
+    failed_batches = []
+
+    print(f"验证批次: {input_dir}\n")
+
+    for bf in batch_files:
+        batch_num = bf.stem.replace("rag_batch_", "")
+        prompt_file = input_dir / f"batch_{batch_num}_prompt.md"
+
+        if not prompt_file.exists():
+            print(f"  {bf.stem}: ⚠ 未找到对应 prompt 文件 {prompt_file.name}")
+            total_warn += 1
+            continue
+
+        prompt_text = prompt_file.read_text(encoding="utf-8")
+        batch_data = json.loads(bf.read_text(encoding="utf-8"))
+
+        errors, warns = _verify_batch_results(prompt_text, batch_data, kb_root)
+
+        if errors:
+            total_fail += 1
+            failed_batches.append(bf.stem)
+            print(f"  {bf.stem}: ✗ FAIL")
+            for e in errors:
+                print(f"    ✗ {e}")
+            for w in warns:
+                print(f"    ⚠ {w}")
+        elif warns:
+            total_warn += 1
+            print(f"  {bf.stem}: ⚠ WARN")
+            for w in warns:
+                print(f"    ⚠ {w}")
+        else:
+            total_pass += 1
+            prompt_cmds = _parse_prompt_commands(prompt_text)
+            print(f"  {bf.stem}: ✓ PASS ({len(prompt_cmds)}/{len(prompt_cmds)} 命令)")
+
+    print(f"\n总结: {total_pass} PASS, {total_fail} FAIL, {total_warn} WARN")
+    if failed_batches:
+        print(f"建议重新执行: {', '.join(failed_batches)}")
+
+    sys.exit(1 if total_fail > 0 else 0)
+
+
 def cmd_validate(args):
     """validate 子命令入口 — 检查 rag_results.json 质量与完整性"""
     input_path = Path(args.input).resolve()
@@ -1794,6 +1952,11 @@ def main():
     p_validate.add_argument("--patients", help="patients.json 路径（可选，用于完整性对比）")
     p_validate.add_argument("--kb-profile", help="orchestration_plan.json 路径（可选，用于组织覆盖率检查）")
 
+    # verify-batch
+    p_verify = sub.add_parser("verify-batch", help="验证批次执行证据的真实性")
+    p_verify.add_argument("--input-dir", required=True, help="批次结果所在目录")
+    p_verify.add_argument("--kb-root", default=None, help="知识库根路径（可选，启用 snippet 校验）")
+
     # generate
     p_gen = sub.add_parser("generate", help="从 RAG 结果生成产出物")
     p_gen.add_argument("--input", required=True, help="RAG 结果 JSON 路径")
@@ -1812,6 +1975,8 @@ def main():
         cmd_merge(args)
     elif args.command == "validate":
         cmd_validate(args)
+    elif args.command == "verify-batch":
+        cmd_verify_batch(args)
     elif args.command == "generate":
         cmd_generate(args)
 
