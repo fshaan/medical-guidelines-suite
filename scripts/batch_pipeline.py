@@ -3,11 +3,12 @@
 批量患者指南检索管道工具
 
 子命令:
-  parse    - 解析输入 xlsx → patients.json
-  split    - 将 patients.json 分成多个批次文件
-  merge    - 合并多个 rag_batch_*.json 为 rag_results.json
-  validate - 检查 rag_results.json 质量与完整性
-  generate - 从 RAG 结果 JSON 生成 xlsx/docx/pptx 产出物
+  parse       - 解析输入 xlsx → patients.json
+  split       - 将 patients.json 分成多个批次文件
+  orchestrate - 自动编排批处理流程（扫描知识库+生成 prompt）
+  merge       - 合并多个 rag_batch_*.json 为 rag_results.json
+  validate    - 检查 rag_results.json 质量与完整性
+  generate    - 从 RAG 结果 JSON 生成 xlsx/docx/pptx 产出物
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import json
 import os
 import re
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 
@@ -731,6 +732,160 @@ def generate_batch_prompt(
     return "\n".join(lines)
 
 
+def cmd_orchestrate(args):
+    """orchestrate 子命令入口 — 自动编排批处理流程"""
+    kb_root = resolve_kb_root(getattr(args, 'kb_root', None))
+    print(f"知识库路径: {kb_root}")
+
+    kb_profile = scan_knowledge_base(kb_root)
+    if not kb_profile["orgs"]:
+        print("知识库为空（无有效 org 目录）", file=sys.stderr)
+        sys.exit(1)
+
+    patients_path = Path(args.patients).resolve()
+    if not patients_path.exists():
+        print(f"患者文件不存在: {patients_path}", file=sys.stderr)
+        sys.exit(1)
+    patients_data = json.loads(patients_path.read_text(encoding="utf-8"))
+    patients = patients_data.get("patients", [])
+    if not patients:
+        print("患者列表为空", file=sys.stderr)
+        sys.exit(1)
+
+    enriched_patients = []
+    total_grep = 0
+    total_kw = 0
+    for p in patients:
+        features = extract_patient_features(p)
+        grep_cmds = generate_grep_commands(features, kb_profile, kb_root)
+        enriched = {**p, "features": features, "grep_commands": grep_cmds}
+        enriched_patients.append(enriched)
+        total_grep += len(grep_cmds)
+        total_kw += len(features.get("all_keywords", []))
+
+    batch_size = args.batch_size
+    max_tokens = args.max_prompt_tokens
+    batches = _split_patients(enriched_patients, batch_size)
+
+    final_batches = []
+    for batch in batches:
+        prompt = generate_batch_prompt(batch, kb_profile, str(kb_root),
+                                       len(final_batches) + 1, len(batches))
+        tokens = estimate_tokens(prompt)
+        if tokens > max_tokens and len(batch) > 1:
+            sub_batches = _auto_split_batch(batch, kb_profile, str(kb_root), max_tokens)
+            final_batches.extend(sub_batches)
+        else:
+            final_batches.append(batch)
+
+    output_dir = Path(args.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    existing_plan_path = output_dir / "orchestration_plan.json"
+    if existing_plan_path.exists():
+        try:
+            old_plan = json.loads(existing_plan_path.read_text(encoding="utf-8"))
+            old_batches = old_plan.get("batches", [])
+            pending = [b for b in old_batches if b.get("status") == "pending"]
+            completed = [b for b in old_batches if b.get("status") == "completed"]
+            if pending:
+                print(f"  ℹ 检测到已有计划: {len(completed)} 批已完成, {len(pending)} 批待处理。进入续跑模式。")
+            elif completed:
+                print(f"  ℹ 检测到已有计划且全部完成 ({len(completed)} 批)。将重新生成。")
+                print(f"     如需保留旧结果，请指定不同的 --output-dir。")
+        except (json.JSONDecodeError, KeyError):
+            print(f"  ⚠ 已有 orchestration_plan.json 格式异常，将重新生成。")
+
+    plan_batches = []
+    for bi, batch in enumerate(final_batches, 1):
+        batch_id = f"batch_{bi:03d}"
+        prompt_file = output_dir / f"{batch_id}_prompt.md"
+        output_file = output_dir / f"rag_{batch_id}.json"
+
+        status = "pending"
+        if output_file.exists():
+            try:
+                check = json.loads(output_file.read_text(encoding="utf-8"))
+                if check.get("results"):
+                    status = "completed"
+                    print(f"  ✓ {batch_id} 已完成 (checkpoint)")
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        if status == "pending":
+            prompt = generate_batch_prompt(
+                batch, kb_profile, str(kb_root), bi, len(final_batches),
+                output_file=str(output_file),
+            )
+            prompt_file.write_text(prompt, encoding="utf-8")
+
+        plan_batches.append({
+            "id": batch_id,
+            "prompt_file": str(prompt_file),
+            "output_file": str(output_file),
+            "patients": [p.get("patient_id") for p in batch],
+            "status": status,
+        })
+
+    plan = {
+        "version": "2.2",
+        "created_at": datetime.now().isoformat(),
+        "kb_root": str(kb_root),
+        "kb_profile": {
+            "orgs": kb_profile["orgs"],
+            "org_files": kb_profile["org_files"],
+        },
+        "total_patients": len(patients),
+        "batch_size": batch_size,
+        "batches": plan_batches,
+        "next_steps": [
+            f"python scripts/batch_pipeline.py merge --input-dir {output_dir} --output {output_dir.parent / 'rag_results.json'}",
+            f"python scripts/batch_pipeline.py validate --input {output_dir.parent / 'rag_results.json'} --patients {patients_path}",
+            f"python scripts/batch_pipeline.py generate --input {output_dir.parent / 'rag_results.json'} --format all",
+        ],
+        "stats": {
+            "total_grep_commands": total_grep,
+            "orgs_covered": sorted(kb_profile["orgs"]),
+            "avg_keywords_per_patient": round(total_kw / len(patients), 1) if patients else 0,
+        },
+    }
+    plan_path = output_dir / "orchestration_plan.json"
+    plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    pending = sum(1 for b in plan_batches if b["status"] == "pending")
+    completed = sum(1 for b in plan_batches if b["status"] == "completed")
+    print(f"\n编排完成:")
+    print(f"  患者: {len(patients)}")
+    print(f"  批次: {len(final_batches)} (待处理: {pending}, 已完成: {completed})")
+    print(f"  grep 命令总数: {total_grep}")
+    print(f"  组织覆盖: {', '.join(sorted(kb_profile['orgs']))}")
+    print(f"  计划文件: {plan_path}")
+
+
+def _auto_split_batch(
+    batch: list[dict],
+    kb_profile: dict,
+    kb_root: str,
+    max_tokens: int,
+) -> list[list[dict]]:
+    """D3: 递归拆分超限批次"""
+    if len(batch) <= 1:
+        return [batch]
+
+    mid = len(batch) // 2
+    left, right = batch[:mid], batch[mid:]
+    result = []
+
+    for sub in (left, right):
+        prompt = generate_batch_prompt(sub, kb_profile, kb_root, 1, 999)
+        if estimate_tokens(prompt) > max_tokens and len(sub) > 1:
+            result.extend(_auto_split_batch(sub, kb_profile, kb_root, max_tokens))
+        else:
+            result.append(sub)
+
+    return result
+
+
 # ─── merge 子命令 ─────────────────────────────────────────────────────────────
 
 
@@ -1435,6 +1590,15 @@ def main():
     p_split.add_argument("--batch-size", type=int, default=5, help="每批患者数 (默认 5)")
     p_split.add_argument("--output-dir", default="Output/batches", help="批次文件输出目录")
 
+    # orchestrate
+    p_orch = sub.add_parser("orchestrate", help="自动编排批处理流程（扫描知识库+生成 prompt）")
+    p_orch.add_argument("--patients", required=True, help="patients.json 路径")
+    p_orch.add_argument("--kb-root", default=None, help="知识库根路径（可选）")
+    p_orch.add_argument("--output-dir", default="Output/batches", help="输出目录")
+    p_orch.add_argument("--batch-size", type=int, default=5, help="每批患者数 (默认 5)")
+    p_orch.add_argument("--max-prompt-tokens", type=int, default=80000,
+                         help="单个 prompt 最大 token 数 (默认 80000)")
+
     # merge
     p_merge = sub.add_parser("merge", help="合并批次结果为 rag_results.json")
     p_merge.add_argument("--input-dir", required=True, help="批次结果所在目录")
@@ -1457,6 +1621,8 @@ def main():
         cmd_parse(args)
     elif args.command == "split":
         cmd_split(args)
+    elif args.command == "orchestrate":
+        cmd_orchestrate(args)
     elif args.command == "merge":
         cmd_merge(args)
     elif args.command == "validate":
