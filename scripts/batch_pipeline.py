@@ -313,7 +313,7 @@ def scan_knowledge_base(kb_root: Path) -> dict:
 def _parse_org_names_from_root(text: str) -> list[str]:
     """从根 data_structure.md 解析组织名（### OrgName/ 模式）"""
     orgs = []
-    for m in re.finditer(r'^###\s+(\w[\w-]*)/\s*$', text, re.MULTILINE):
+    for m in re.finditer(r'^###\s+(\w[\w-]*)/', text, re.MULTILINE):
         orgs.append(m.group(1))
     return orgs
 
