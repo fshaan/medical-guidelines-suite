@@ -1048,6 +1048,50 @@ def _check_org_coverage(results: list[dict], known_orgs: list[str]) -> list[str]
     return warnings
 
 
+def _parse_prompt_commands(prompt_text: str) -> list:
+    """从 batch prompt 中提取所有 CMD-* 标记的 grep 命令。
+
+    Returns: [{"cmd_id": "CMD-P001-NCCN-01", "command": "grep ...",
+               "patient_index": 1, "org": "NCCN", "seq": 1}]
+    """
+    pattern = r'(CMD-P(\d+)-([\w-]+)-(\d+)):\s*(grep\s+.+)'
+    results = []
+    for match in re.finditer(pattern, prompt_text):
+        results.append({
+            "cmd_id": match.group(1),
+            "patient_index": int(match.group(2)),
+            "org": match.group(3),
+            "seq": int(match.group(4)),
+            "command": match.group(5).strip(),
+        })
+    return results
+
+
+def _verify_snippet(snippet: str, source_file: str, kb_root: str) -> bool:
+    """验证 snippet 是否存在于知识库文件中。
+
+    遍历 kb_root/*/extracted/ 查找 source_file，规范化空白后做子串匹配。
+    """
+    if not snippet or not source_file:
+        return False
+
+    kb_path = Path(kb_root)
+    for org_dir in kb_path.iterdir():
+        if not org_dir.is_dir():
+            continue
+        candidate = org_dir / "extracted" / source_file
+        if candidate.exists():
+            try:
+                content = candidate.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            norm_snippet = re.sub(r'\s+', ' ', snippet.strip())
+            norm_content = re.sub(r'\s+', ' ', content)
+            if norm_snippet in norm_content:
+                return True
+    return False
+
+
 def cmd_validate(args):
     """validate 子命令入口 — 检查 rag_results.json 质量与完整性"""
     input_path = Path(args.input).resolve()
