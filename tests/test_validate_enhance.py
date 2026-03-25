@@ -45,3 +45,30 @@ def test_cross_batch_no_warning_different():
     ]
     warnings = _check_cross_batch_similarity(results, threshold=0.8)
     assert len(warnings) == 0
+
+
+from scripts.batch_pipeline import _check_org_coverage
+
+
+def test_org_coverage_warning():
+    results = [
+        {"patient_id": "P001",
+         "clinical_questions": [{"guideline_results": [
+             {"guideline": "NCCN", "recommendation": "..."},
+             {"guideline": "ESMO", "recommendation": "..."},
+         ]}]},
+    ]
+    known_orgs = ["NCCN", "ESMO", "CSCO", "Japanese", "Korean", "CACA"]
+    warnings = _check_org_coverage(results, known_orgs)
+    assert len(warnings) > 0
+
+
+def test_org_coverage_pass():
+    results = [
+        {"patient_id": "P001",
+         "clinical_questions": [{"guideline_results": [
+             {"guideline": org, "recommendation": "..."} for org in ["NCCN", "ESMO", "CSCO"]
+         ]}]},
+    ]
+    warnings = _check_org_coverage(results, ["NCCN", "ESMO", "CSCO"])
+    assert len(warnings) == 0

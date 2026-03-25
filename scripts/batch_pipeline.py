@@ -986,6 +986,24 @@ def _check_cross_batch_similarity(results: list[dict], threshold: float = 0.8) -
     return warnings
 
 
+def _check_org_coverage(results: list[dict], known_orgs: list[str]) -> list[str]:
+    warnings = []
+    for r in results:
+        pid = r.get("patient_id", "?")
+        covered_orgs = set()
+        for q in r.get("clinical_questions", []):
+            for gr in q.get("guideline_results", []):
+                covered_orgs.add(gr.get("guideline", ""))
+        missing = set(known_orgs) - covered_orgs
+        if missing:
+            coverage = len(covered_orgs) / len(known_orgs) * 100 if known_orgs else 0
+            warnings.append(
+                f"[{pid}] 组织覆盖率 {coverage:.0f}% ({len(covered_orgs)}/{len(known_orgs)}), "
+                f"缺失: {', '.join(sorted(missing))}"
+            )
+    return warnings
+
+
 def cmd_validate(args):
     """validate 子命令入口 — 检查 rag_results.json 质量与完整性"""
     input_path = Path(args.input).resolve()
@@ -1072,6 +1090,20 @@ def cmd_validate(args):
     # 跨批次相似度检测 (D9)
     cross_warnings = _check_cross_batch_similarity(results)
     warnings.extend(cross_warnings)
+
+    # 组织覆盖率检测 (§1.8)
+    kb_profile_path = getattr(args, 'kb_profile', None)
+    if kb_profile_path:
+        plan_path = Path(kb_profile_path).resolve()
+        if plan_path.exists():
+            try:
+                plan_data = json.loads(plan_path.read_text(encoding="utf-8"))
+                known_orgs = plan_data.get("kb_profile", {}).get("orgs", [])
+                if known_orgs:
+                    org_warnings = _check_org_coverage(results, known_orgs)
+                    warnings.extend(org_warnings)
+            except (json.JSONDecodeError, KeyError):
+                pass
 
     # 输出报告
     print(f"验证结果: {len(results)} 位患者")
@@ -1656,6 +1688,7 @@ def main():
     p_validate = sub.add_parser("validate", help="验证 RAG 结果质量与完整性")
     p_validate.add_argument("--input", required=True, help="rag_results.json 路径")
     p_validate.add_argument("--patients", help="patients.json 路径（可选，用于完整性对比）")
+    p_validate.add_argument("--kb-profile", help="orchestration_plan.json 路径（可选，用于组织覆盖率检查）")
 
     # generate
     p_gen = sub.add_parser("generate", help="从 RAG 结果生成产出物")
