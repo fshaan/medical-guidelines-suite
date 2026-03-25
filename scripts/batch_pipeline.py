@@ -1030,6 +1030,48 @@ def _check_cross_batch_similarity(results: list[dict], threshold: float = 0.8) -
     return warnings
 
 
+def _check_batch_depth_decay(results: list) -> list:
+    """检测后续批次执行深度是否显著衰减。"""
+    warnings = []
+    batch_stats = {}  # batch_source -> total_matches
+
+    for r in results:
+        batch = r.get("batch_source", "unknown")
+        if batch not in batch_stats:
+            batch_stats[batch] = 0
+        for q in r.get("clinical_questions", []):
+            for gr in q.get("guideline_results", []):
+                for entry in gr.get("execution_log", []):
+                    batch_stats[batch] += entry.get("match_count", 0)
+
+    sorted_batches = sorted(batch_stats.items())
+    if len(sorted_batches) < 3:
+        return warnings
+
+    depths = [count for _, count in sorted_batches]
+    mid = len(depths) // 2
+    first_half_avg = sum(depths[:mid]) / mid if mid else 0
+    second_half_avg = sum(depths[mid:]) / (len(depths) - mid) if (len(depths) - mid) else 0
+
+    if first_half_avg > 0 and second_half_avg < first_half_avg * 0.4:
+        warnings.append(
+            f"批次深度衰减: 前半段平均匹配数 {first_half_avg:.0f}, "
+            f"后半段 {second_half_avg:.0f} (衰减 {(1 - second_half_avg / first_half_avg) * 100:.0f}%)"
+        )
+
+    # 连续 3 批单调递减
+    for i in range(2, len(depths)):
+        if depths[i] < depths[i - 1] < depths[i - 2]:
+            batch_names = [sorted_batches[j][0] for j in (i - 2, i - 1, i)]
+            warnings.append(
+                f"连续衰减趋势: {', '.join(batch_names)} "
+                f"(匹配数 {depths[i-2]} → {depths[i-1]} → {depths[i]})"
+            )
+            break
+
+    return warnings
+
+
 def _check_org_coverage(results: list[dict], known_orgs: list[str]) -> list[str]:
     warnings = []
     for r in results:
@@ -1336,6 +1378,10 @@ def cmd_validate(args):
     # 跨批次相似度检测 (D9)
     cross_warnings = _check_cross_batch_similarity(results)
     warnings.extend(cross_warnings)
+
+    # 批次深度衰减检测 (L4)
+    depth_warnings = _check_batch_depth_decay(results)
+    warnings.extend(depth_warnings)
 
     # 组织覆盖率检测 (§1.8)
     kb_profile_path = getattr(args, 'kb_profile', None)

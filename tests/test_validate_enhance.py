@@ -1,6 +1,6 @@
 import json
 import pytest
-from scripts.batch_pipeline import _bigram_jaccard, _check_cross_batch_similarity
+from scripts.batch_pipeline import _bigram_jaccard, _check_cross_batch_similarity, _check_batch_depth_decay
 
 
 def test_bigram_jaccard_identical():
@@ -71,4 +71,64 @@ def test_org_coverage_pass():
          ]}]},
     ]
     warnings = _check_org_coverage(results, ["NCCN", "ESMO", "CSCO"])
+    assert len(warnings) == 0
+
+
+def test_batch_depth_decay_detected():
+    """后半段匹配数 < 前半段 40% → WARNING"""
+    results = []
+    for bi in range(1, 4):
+        results.append({
+            "patient_id": f"P{bi:03d}", "batch_source": f"batch_{bi:03d}",
+            "clinical_questions": [{"guideline_results": [
+                {"guideline": "NCCN", "recommendation": "x" * 100,
+                 "execution_log": [
+                     {"cmd_id": f"CMD-P001-NCCN-0{i}", "match_count": 10, "first_match_snippet": "y" * 30}
+                     for i in range(1, 4)
+                 ]},
+            ]}],
+        })
+    for bi in range(4, 7):
+        results.append({
+            "patient_id": f"P{bi:03d}", "batch_source": f"batch_{bi:03d}",
+            "clinical_questions": [{"guideline_results": [
+                {"guideline": "NCCN", "recommendation": "x" * 100,
+                 "execution_log": [
+                     {"cmd_id": f"CMD-P001-NCCN-01", "match_count": 1, "first_match_snippet": "z" * 30}
+                 ]},
+            ]}],
+        })
+    warnings = _check_batch_depth_decay(results)
+    assert len(warnings) > 0
+    assert "衰减" in warnings[0]
+
+
+def test_batch_depth_no_decay():
+    """深度均匀 → 无 WARNING"""
+    results = []
+    for bi in range(1, 5):
+        results.append({
+            "patient_id": f"P{bi:03d}", "batch_source": f"batch_{bi:03d}",
+            "clinical_questions": [{"guideline_results": [
+                {"guideline": "NCCN", "recommendation": "x" * 100,
+                 "execution_log": [
+                     {"cmd_id": f"CMD-P001-NCCN-0{i}", "match_count": 10, "first_match_snippet": "y" * 30}
+                     for i in range(1, 4)
+                 ]},
+            ]}],
+        })
+    warnings = _check_batch_depth_decay(results)
+    assert len(warnings) == 0
+
+
+def test_batch_depth_single_batch():
+    """单批次 → 跳过衰减检测"""
+    results = [{
+        "patient_id": "P001", "batch_source": "batch_001",
+        "clinical_questions": [{"guideline_results": [
+            {"guideline": "NCCN", "recommendation": "x" * 100,
+             "execution_log": [{"cmd_id": "CMD-P001-NCCN-01", "match_count": 5, "first_match_snippet": "y" * 30}]},
+        ]}],
+    }]
+    warnings = _check_batch_depth_decay(results)
     assert len(warnings) == 0
