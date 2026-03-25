@@ -954,6 +954,10 @@ def cmd_merge(args):
                 continue
             patient_ids_seen.add(pid)
 
+            # 注入 batch_source（用于跨批次分析）
+            if "batch_source" not in result:
+                result["batch_source"] = bf.stem.replace("rag_", "")  # "batch_001"
+
             # 结构规范化：确保 consensus/differences 在 clinical_questions 内
             for q in result.get("clinical_questions", []):
                 if "consensus" not in q:
@@ -1188,6 +1192,12 @@ def _verify_batch_results(
                     f"但 prompt 实际有 {actual_prompt_count} 条命令"
                 )
 
+        # 如果患者完全没有 execution_log，也报错
+        if not patient_cmd_ids and exec_summary:
+            errors.append(
+                f"[{pid}] 无 execution_log 条目（execution_summary 存在但无执行记录）"
+            )
+
         for q in result.get("clinical_questions", []):
             for gr in q.get("guideline_results", []):
                 org = gr.get("guideline", "")
@@ -1263,7 +1273,13 @@ def cmd_verify_batch(args):
             continue
 
         prompt_text = prompt_file.read_text(encoding="utf-8")
-        batch_data = json.loads(bf.read_text(encoding="utf-8"))
+        try:
+            batch_data = json.loads(bf.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+            total_fail += 1
+            failed_batches.append(bf.stem)
+            print(f"  {bf.stem}: ✗ FAIL (文件损坏: {e})")
+            continue
 
         errors, warns = _verify_batch_results(prompt_text, batch_data, kb_root)
 
@@ -1283,8 +1299,17 @@ def cmd_verify_batch(args):
         else:
             total_pass += 1
             prompt_cmds = _parse_prompt_commands(prompt_text)
-            print(f"  {bf.stem}: ✓ PASS ({len(prompt_cmds)}/{len(prompt_cmds)} 命令)")
+            # 统计 JSON 中实际记录的 CMD-ID 数
+            json_cmd_count = sum(
+                len(entry.get("execution_log", []))
+                for r in batch_data.get("results", [])
+                for q in r.get("clinical_questions", [])
+                for entry in q.get("guideline_results", [])
+            )
+            print(f"  {bf.stem}: ✓ PASS ({json_cmd_count}/{len(prompt_cmds)} 命令)")
 
+    if not kb_root:
+        print("  ℹ V3 snippet 真实性验证已跳过（未提供 --kb-root）")
     print(f"\n总结: {total_pass} PASS, {total_fail} FAIL, {total_warn} WARN")
     if failed_batches:
         print(f"建议重新执行: {', '.join(failed_batches)}")
