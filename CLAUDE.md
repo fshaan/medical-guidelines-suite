@@ -53,7 +53,7 @@ medical-guidelines-suite/
 ├── skill.json                  # Package metadata
 ├── README.md / CHANGELOG.md
 ├── scripts/
-│   ├── batch_pipeline.py       # 7 subcommands: parse/split/orchestrate/merge/validate/generate
+│   ├── batch_pipeline.py       # 8 subcommands: parse/split/orchestrate/merge/validate/verify-batch/generate
 │   ├── extract_pdf.py          # PDF text extraction
 │   ├── extract_docx.py         # DOCX text extraction
 │   └── extract_all.py          # Batch extraction entry point
@@ -66,7 +66,7 @@ medical-guidelines-suite/
 │   ├── data_structure_root.md  # Root index template
 │   ├── data_structure_org.md   # Organization index template
 │   └── report_template.pptx    # PPTX slide template
-├── tests/                      # pytest suite (51 tests)
+├── tests/                      # pytest suite (70 tests)
 ├── docs/                       # Design documents
 ├── Input/                      # User input files (xlsx, patients.json)
 └── Output/                     # Generated outputs (auto-created)
@@ -97,7 +97,8 @@ python scripts/batch_pipeline.py orchestrate \
 
 # (LLM executes each batch prompt → Output/batches/rag_batch_*.json)
 
-# Merge + validate + generate
+# Verify execution evidence + merge + validate + generate
+python scripts/batch_pipeline.py verify-batch --input-dir Output/batches/ --kb-root $MEDICAL_GUIDELINES_DIR
 python scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
 python scripts/batch_pipeline.py validate --input Output/rag_results.json --patients Output/patients.json
 python scripts/batch_pipeline.py generate --input Output/rag_results.json --format all
@@ -106,7 +107,7 @@ python scripts/batch_pipeline.py generate --input Output/rag_results.json --form
 ### Testing
 
 ```bash
-python -m pytest tests/ -v          # Run all tests (51)
+python -m pytest tests/ -v          # Run all tests (70)
 python -m pytest tests/ -v -k scan  # Run specific tests
 ```
 
