@@ -942,6 +942,50 @@ def cmd_merge(args):
 # ─── validate 子命令 ──────────────────────────────────────────────────────────
 
 
+def _char_bigrams(text: str) -> set:
+    text = text.strip()
+    if len(text) < 2:
+        return set()
+    return {text[i:i+2] for i in range(len(text) - 1)}
+
+
+def _bigram_jaccard(a: str, b: str) -> float:
+    sa, sb = _char_bigrams(a), _char_bigrams(b)
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
+
+
+def _check_cross_batch_similarity(results: list[dict], threshold: float = 0.8) -> list[str]:
+    warnings = []
+    patient_recs = []
+    for r in results:
+        pid = r.get("patient_id", "?")
+        batch = r.get("batch_source", "?")
+        text_parts = []
+        for q in r.get("clinical_questions", []):
+            for gr in q.get("guideline_results", []):
+                text_parts.append(gr.get("recommendation", ""))
+        full_text = " ".join(text_parts)
+        if full_text.strip():
+            patient_recs.append((pid, batch, full_text))
+
+    for i in range(len(patient_recs)):
+        for j in range(i + 1, len(patient_recs)):
+            pid_i, batch_i, text_i = patient_recs[i]
+            pid_j, batch_j, text_j = patient_recs[j]
+            if batch_i == batch_j:
+                continue
+            score = _bigram_jaccard(text_i, text_j)
+            if score > threshold:
+                warnings.append(
+                    f"[{pid_i}] 与 [{pid_j}] 推荐文本高度相似 "
+                    f"(Jaccard={score:.2f}, 批次 {batch_i} vs {batch_j}) "
+                    f"— 可能存在上下文污染"
+                )
+    return warnings
+
+
 def cmd_validate(args):
     """validate 子命令入口 — 检查 rag_results.json 质量与完整性"""
     input_path = Path(args.input).resolve()
@@ -1024,6 +1068,10 @@ def cmd_validate(args):
                     warnings.append(
                         f"[{pid}] 推荐总长度异常偏短 ({length}字 vs 平均 {avg_len:.0f}字)"
                     )
+
+    # 跨批次相似度检测 (D9)
+    cross_warnings = _check_cross_batch_similarity(results)
+    warnings.extend(cross_warnings)
 
     # 输出报告
     print(f"验证结果: {len(results)} 位患者")
