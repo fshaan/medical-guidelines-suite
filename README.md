@@ -1,4 +1,4 @@
-# Medical Guidelines Suite v2.2.0
+# Medical Guidelines Suite v2.3.0
 
 Clinical guidelines knowledge base builder, retrieval engine, and batch patient report generator.
 
@@ -65,7 +65,8 @@ python scripts/batch_pipeline.py orchestrate \
 
 # (Claude executes each batch prompt → Output/batches/rag_batch_*.json)
 
-# Merge batch results + validate quality
+# Verify execution evidence + merge batch results + validate quality
+python scripts/batch_pipeline.py verify-batch --input-dir Output/batches/ --kb-root ./guidelines
 python scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
 python scripts/batch_pipeline.py validate --input Output/rag_results.json --patients Output/patients.json
 
@@ -108,9 +109,10 @@ medical-guidelines-suite/
 │   ├── extract_pdf.py          # PDF text extraction
 │   ├── extract_docx.py         # DOCX text extraction
 │   ├── extract_all.py          # Batch extraction
-│   └── batch_pipeline.py       # Batch patient pipeline (parse/split/orchestrate/merge/validate/generate)
-├── tests/                      # pytest test suite (51 tests)
+│   └── batch_pipeline.py       # Batch patient pipeline (8 subcommands incl. verify-batch)
+├── tests/                      # pytest test suite (70 tests)
 ├── docs/
+│   ├── v2.3-anti-laziness-spec.md  # v2.3 execution evidence spec
 │   ├── v2.2-fix-plan.md       # v2.2 design spec
 │   ├── v2.2-decisions.md      # Confirmed design decisions (D1-D9)
 │   └── architecture.md        # Engineering review report
@@ -120,7 +122,7 @@ medical-guidelines-suite/
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.9+
 - `openpyxl` — Excel read/write
 - `python-docx` — Word document generation
 - `python-pptx` — PowerPoint generation

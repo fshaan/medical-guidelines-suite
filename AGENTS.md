@@ -107,10 +107,10 @@ medical-guidelines-suite/
 ├── SKILL.md                    # 完整技能定义
 ├── AGENTS.md                   # 本文件（OpenCode 指令）
 ├── CLAUDE.md                   # Claude Code 指令
-├── scripts/batch_pipeline.py   # 7 个子命令: parse/split/orchestrate/merge/validate/generate
+├── scripts/batch_pipeline.py   # 8 个子命令: parse/split/orchestrate/merge/validate/verify-batch/generate
 ├── references/                 # 文件处理指南 + 输入格式规范
 ├── templates/                  # 索引模板 + PPTX 模板
-├── tests/                      # pytest 测试 (51 tests)
+├── tests/                      # pytest 测试 (70 tests)
 ├── Input/                      # 用户输入文件
 └── Output/                     # 生成输出（自动创建）
 ```

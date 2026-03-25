@@ -8,12 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.3.0] - 2026-03-25
 
 ### Added
-- **`verify-batch` subcommand** — post-hoc verification of LLM batch execution evidence before merge
-  - V1: command coverage check (prompt CMD-IDs vs JSON execution_log)
-  - V2: count consistency check (claimed vs actual command counts)
-  - V3: snippet authenticity check (first_match_snippet verified against knowledge base files)
-  - V4: zero-match contradiction detection (match_count=0 with substantial recommendations)
-- **Batch depth decay detection** in validate — detects when later batches have significantly less search evidence than earlier ones (front-half vs back-half comparison + consecutive 3-batch monotonic decrease)
+- **`verify-batch` subcommand** — 在合并前自动验证 LLM 是否真正执行了每条 grep 命令，防止偷懒
+  - V1: 命令覆盖率检查（prompt 中的 CMD-ID vs JSON 中的 execution_log）
+  - V2: 计数一致性检查（声称的命令数 vs 实际命令数）
+  - V3: snippet 真实性校验（从知识库文件中验证 first_match_snippet 是否存在）
+  - V4: 空匹配矛盾检测（match_count=0 却有具体推荐内容）
+- **批次深度衰减检测** — validate 自动检测后续批次的检索深度是否显著低于前序批次（前后半段对比 + 连续 3 批单调递减）
 - **CMD-ID numbering** in batch prompts — each grep command gets a unique `CMD-P{n}-{org}-{seq}` identifier
 - **Per-patient checkpoints** in batch prompts — execution_summary verification points after each patient's grep commands
 - **execution_log JSON schema** in batch prompt output requirements — complete example with cmd_id, match_count, first_match_snippet
