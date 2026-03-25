@@ -171,6 +171,13 @@ def cmd_parse(args):
 # ─── split 子命令 ─────────────────────────────────────────────────────────────
 
 
+def _split_patients(patients: list[dict], batch_size: int) -> list[list[dict]]:
+    """将患者列表分成多个批次（纯函数，供 split 和 orchestrate 共用）"""
+    if not patients:
+        return []
+    return [patients[i:i + batch_size] for i in range(0, len(patients), batch_size)]
+
+
 def cmd_split(args):
     """split 子命令入口 — 将 patients.json 分成多个批次文件"""
     input_path = Path(args.input).resolve()
@@ -189,7 +196,7 @@ def cmd_split(args):
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    batches = [patients[i:i + batch_size] for i in range(0, len(patients), batch_size)]
+    batches = _split_patients(patients, batch_size)
 
     for idx, batch in enumerate(batches, 1):
         batch_data = {
