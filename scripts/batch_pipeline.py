@@ -10,6 +10,8 @@
   generate - 从 RAG 结果 JSON 生成 xlsx/docx/pptx 产出物
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -442,6 +444,201 @@ def generate_grep_commands(
             })
 
     return commands
+
+
+# ─── 临床特征提取 ──────────────────────────────────────────────────────────────
+
+_MOLECULAR_PATTERNS = re.compile(
+    r'(HER2|Her2|her2|MSI-H|MSS|dMMR|pMMR|PD-L1|CPS[≥<>\d]+|EGFR|ALK|ROS1|'
+    r'NTRK|BRAF|KRAS|NRAS|PIK3CA|FGFR2|Claudin[\s-]?18)',
+    re.IGNORECASE,
+)
+_STAGING_PATTERNS = re.compile(
+    r'((?:yc|c|p)?T[1-4][a-d]?|N[0-3][a-b]?|M[01]|'
+    r'stage\s*(?:I{1,3}V?|IV)|[IⅠⅡⅢⅣ]+[A-C]?期)',
+    re.IGNORECASE,
+)
+_METASTASIS_SITES = {
+    "腹膜": ["腹膜", "peritoneal", "peritoneum"],
+    "肝": ["肝", "liver", "hepatic"],
+    "肺": ["肺", "lung", "pulmonary"],
+    "骨": ["骨", "bone", "osseous"],
+    "脑": ["脑", "brain", "cerebral"],
+    "卵巢": ["卵巢", "ovarian", "Krukenberg"],
+    "淋巴结": ["远处淋巴结", "distant lymph", "Virchow"],
+}
+_TREATMENT_PATTERNS = re.compile(
+    r'(SOX|XELOX|CAPOX|FOLFOX|FLOT|S-1|替吉奥|卡培他滨|奥沙利铂|'
+    r'PD-1|PD-L1|pembrolizumab|nivolumab|trastuzumab|'
+    r'曲妥珠单抗|帕博利珠单抗|纳武利尤单抗|信迪利单抗|替雷利珠单抗|'
+    r'化疗|靶向|免疫|放疗|内镜|手术|'
+    r'\d+C\s+\w+)',
+    re.IGNORECASE,
+)
+_EMERGENCY_KEYWORDS = ["出血", "bleeding", "梗阻", "obstruction", "穿孔", "perforation", "急症"]
+_COMORBIDITY_PATTERNS = re.compile(
+    r'(糖尿病|diabetes|高血压|hypertension|肾功能不全|renal|心[脏功]|cardiac|'
+    r'肝硬化|cirrhosis|COPD|肺功能|elderly|高龄)',
+    re.IGNORECASE,
+)
+
+
+def extract_patient_features(patient: dict) -> dict:
+    """从患者数据提取 9 维临床特征关键词 (D2: 正则扫描 + confidence)。"""
+    features = {
+        "diagnosis_keywords": [],
+        "staging_keywords": [],
+        "metastasis_keywords": [],
+        "molecular_keywords": [],
+        "treatment_keywords": [],
+        "marker_keywords": [],
+        "event_keywords": [],
+        "comorbidity_keywords": [],
+        "special_keywords": [],
+    }
+
+    narrative = patient.get("clinical_narrative")
+    is_narrative = narrative and not patient.get("primary_site")
+
+    if is_narrative:
+        _extract_from_narrative(narrative, features)
+    else:
+        _extract_from_structured(patient, features)
+
+    # 去重合并
+    all_kw = []
+    seen = set()
+    for key in features:
+        for kw in features[key]:
+            if kw.lower() not in seen:
+                seen.add(kw.lower())
+                all_kw.append(kw)
+    features["all_keywords"] = all_kw
+
+    # D2: confidence 标记
+    dimensions_hit = sum(1 for k, v in features.items()
+                         if k.endswith("_keywords") and k != "all_keywords" and v)
+    features["confidence"] = "low" if dimensions_hit <= 2 else "high"
+
+    return features
+
+
+def _extract_from_structured(p: dict, features: dict):
+    """从结构化字段提取关键词"""
+    if p.get("primary_site"):
+        features["diagnosis_keywords"].extend([p["primary_site"], "gastric", "胃癌"])
+    if p.get("pathology"):
+        features["diagnosis_keywords"].append(p["pathology"])
+
+    for field in ("staging_prefix", "t_stage", "n_stage", "m_stage"):
+        val = p.get(field)
+        if val:
+            features["staging_keywords"].append(val)
+    prefix = p.get("staging_prefix", "")
+    t = p.get("t_stage", "")
+    n = p.get("n_stage", "")
+    m = p.get("m_stage", "")
+    if t and n:
+        features["staging_keywords"].append(f"{prefix}{t}{n}{m}")
+
+    if p.get("m_sites"):
+        sites = re.split(r'[,，、/]', p["m_sites"])
+        for s in sites:
+            s = s.strip()
+            if s:
+                features["metastasis_keywords"].append(s)
+                for en_name, aliases in _METASTASIS_SITES.items():
+                    if any(a in s for a in aliases):
+                        features["metastasis_keywords"].extend(aliases)
+                        break
+    if p.get("t4b_invasion"):
+        features["metastasis_keywords"].append(p["t4b_invasion"])
+
+    for field in ("biopsy_molecular", "gross_molecular"):
+        val = p.get(field)
+        if val:
+            items = re.split(r'[,，]', val.replace("hj_", ""))
+            features["molecular_keywords"].extend(i.strip() for i in items if i.strip())
+
+    if p.get("prior_treatment"):
+        matches = _TREATMENT_PATTERNS.findall(p["prior_treatment"])
+        features["treatment_keywords"].extend(matches)
+    if p.get("patient_type"):
+        if "初治" in p["patient_type"]:
+            features["treatment_keywords"].extend(["初治", "treatment-naive", "first-line"])
+        elif "术前" in p["patient_type"] or "sq_" in p["patient_type"]:
+            features["treatment_keywords"].extend(["术前治疗后", "post-neoadjuvant"])
+    if p.get("response"):
+        r = p["response"]
+        if r not in ("不适用", None, ""):
+            features["treatment_keywords"].append(r)
+
+    if p.get("abnormal_markers"):
+        markers = re.split(r'[,，、]', p["abnormal_markers"])
+        features["marker_keywords"].extend(m.strip() for m in markers if m.strip())
+    if p.get("marker_change"):
+        features["marker_keywords"].append(p["marker_change"])
+
+    if p.get("tumor_emergency") and p["tumor_emergency"] != "无":
+        features["event_keywords"].append(p["tumor_emergency"])
+        for ek in _EMERGENCY_KEYWORDS:
+            if ek in p["tumor_emergency"]:
+                features["event_keywords"].append(ek)
+
+    if p.get("comorbidities"):
+        features["comorbidity_keywords"].append(p["comorbidities"])
+        matches = _COMORBIDITY_PATTERNS.findall(p["comorbidities"])
+        features["comorbidity_keywords"].extend(matches)
+
+    if p.get("siewert_type"):
+        features["special_keywords"].extend([
+            f"Siewert {p['siewert_type']}",
+            "EGJ", "食管胃结合部",
+        ])
+    age = p.get("age")
+    if age and isinstance(age, int) and age >= 75:
+        features["special_keywords"].extend(["高龄", "elderly"])
+
+
+def _extract_from_narrative(text: str, features: dict):
+    """从 narrative 文本正则扫描所有维度"""
+    site_patterns = ["胃", "食管", "结肠", "直肠", "gastric", "esophag", "colon", "rectal"]
+    for sp in site_patterns:
+        if sp in text or sp in text.lower():
+            features["diagnosis_keywords"].append(sp)
+    path_types = ["腺癌", "印戒", "鳞癌", "adenocarcinoma", "signet", "squamous"]
+    for pt in path_types:
+        if pt in text or pt in text.lower():
+            features["diagnosis_keywords"].append(pt)
+
+    features["staging_keywords"].extend(_STAGING_PATTERNS.findall(text))
+
+    for cn_name, aliases in _METASTASIS_SITES.items():
+        for a in aliases:
+            if a in text:
+                features["metastasis_keywords"].extend(aliases)
+                break
+
+    features["molecular_keywords"].extend(_MOLECULAR_PATTERNS.findall(text))
+    features["treatment_keywords"].extend(_TREATMENT_PATTERNS.findall(text))
+
+    marker_pats = ["CEA", "CA199", "CA724", "CA125", "AFP"]
+    for mp in marker_pats:
+        if mp in text.upper():
+            features["marker_keywords"].append(mp)
+
+    for ek in _EMERGENCY_KEYWORDS:
+        if ek in text or ek in text.lower():
+            features["event_keywords"].append(ek)
+
+    features["comorbidity_keywords"].extend(_COMORBIDITY_PATTERNS.findall(text))
+
+    siewert_match = re.search(r'Siewert\s*(?:type\s*)?([IⅠⅡⅢ123]+)', text, re.IGNORECASE)
+    if siewert_match:
+        features["special_keywords"].extend(["Siewert", "EGJ", "食管胃结合部"])
+    age_match = re.search(r'(\d{2,3})\s*岁', text)
+    if age_match and int(age_match.group(1)) >= 75:
+        features["special_keywords"].extend(["高龄", "elderly"])
 
 
 # ─── merge 子命令 ─────────────────────────────────────────────────────────────
