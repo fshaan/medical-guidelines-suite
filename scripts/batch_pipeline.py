@@ -712,23 +712,66 @@ def generate_batch_prompt(
         if grep_cmds:
             lines.append(f"\n#### 必须执行的 grep 命令（共 {len(grep_cmds)} 条，不得跳过）\n")
             current_org = None
-            cmd_num = 0
+            org_seq = {}  # org -> current sequence number
             for gc in grep_cmds:
-                if gc["org"] != current_org:
-                    current_org = gc["org"]
+                org = gc["org"]
+                if org != current_org:
+                    current_org = org
                     lines.append(f"**{current_org}（必须）:**")
-                cmd_num += 1
-                lines.append(f"{cmd_num}. {gc['command']}")
+                org_seq.setdefault(org, 0)
+                org_seq[org] += 1
+                cmd_id = f"CMD-P{pi:03d}-{org}-{org_seq[org]:02d}"
+                lines.append(f"{cmd_id}: {gc['command']}")
+                lines.append(f"  → 记录到 execution_log: {{cmd_id, match_count, first_match_snippet (≥30字)}}")
 
-        lines.append("\n#### LLM 补充检索空间")
-        lines.append("如果在上述 grep 结果中发现需要进一步深入的线索，")
-        lines.append("可补充执行额外的 grep 命令（限同一知识库范围内）。\n")
+        total_cmds = len(grep_cmds) if grep_cmds else 0
+
+        if total_cmds > 0:
+            lines.append(f"\n#### ✅ 检查点 [患者 {pi}: {pname}]")
+            lines.append(f"确认以上 {total_cmds} 条 grep 命令全部执行完毕。")
+            lines.append(f"在 JSON 输出中填写该患者的 execution_summary:")
+            lines.append(f"  total_commands_in_prompt: {total_cmds}")
+            lines.append(f"  total_commands_executed: <实际执行数，必须等于 {total_cmds}>")
+            lines.append(f"  commands_with_zero_matches: [<列出 match_count=0 的 CMD-ID>]")
+
+        lines.append("\n#### 补充检索")
+        lines.append("所有必须命令（CMD-*）执行完毕且记录到 execution_log 后，")
+        lines.append("可补充执行额外 grep 命令。补充命令不需要 CMD-ID。\n")
 
     lines.append("## 输出要求\n")
     lines.append(f"- 文件路径: {output_file}")
     lines.append("- 格式: JSON")
-    lines.append("- 每个 guideline_results 条目必须包含: guideline, version, recommendation, evidence_level, source_file, source_lines")
     lines.append("- 输出语言: 简体中文")
+    lines.append("")
+    lines.append("每个 `guideline_results` 条目必须包含以下字段:")
+    lines.append("```json")
+    lines.append('{')
+    lines.append('  "guideline": "NCCN",')
+    lines.append('  "version": "2026.V2",')
+    lines.append('  "recommendation": "推荐内容（简体中文，≥50字）",')
+    lines.append('  "evidence_level": "Category 1",')
+    lines.append('  "source_file": "NCCN_GastricCancer_2026.V2_EN.txt",')
+    lines.append('  "source_lines": "234-267",')
+    lines.append('  "execution_log": [')
+    lines.append('    {')
+    lines.append('      "cmd_id": "CMD-P001-NCCN-01",')
+    lines.append('      "match_count": 14,')
+    lines.append('      "first_match_snippet": "第一个匹配行的文本片段（≥30字，match_count=0时为空字符串）"')
+    lines.append('    }')
+    lines.append('  ]')
+    lines.append('}')
+    lines.append("```")
+    lines.append("")
+    lines.append("每位患者必须包含 `execution_summary`:")
+    lines.append("```json")
+    lines.append('{')
+    lines.append('  "execution_summary": {')
+    lines.append('    "total_commands_in_prompt": 12,')
+    lines.append('    "total_commands_executed": 12,')
+    lines.append('    "commands_with_zero_matches": ["CMD-P001-JGCA-02"]')
+    lines.append('  }')
+    lines.append('}')
+    lines.append("```")
 
     return "\n".join(lines)
 
