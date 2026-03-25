@@ -1198,56 +1198,65 @@ python scripts/batch_pipeline.py parse --input <user_xlsx> --output Output/patie
 
 Read `Output/patients.json` to confirm patient count N.
 
-### Step 3: Determine Processing Mode
+<HARD_CONSTRAINT>
 
-- **N ≤ 5**: Direct mode — process all patients in one pass (same as legacy behavior, skip to Step 3A)
-- **N > 5**: Batch mode — split into batches of 5 (proceed to Step 3B)
+### Execution Mode Constraints
 
-User can override batch size: "每批 3 人" → `--batch-size 3`
+1. **禁止 subagent / 并行代理**: 所有批处理步骤在当前会话中顺序执行。
+   禁止使用 Agent tool、Task tool 或任何并行机制。
+   原因: subagent 无法继承知识库上下文，搜索质量无法保证一致性。
 
-#### Step 3A: Direct Mode (N ≤ 5)
+2. **禁止自行编码替代脚本**: 必须使用 scripts/batch_pipeline.py 的子命令。
+   原因: 脚本已验证，自行编码引入格式差异和路径错误。
 
-Read `$KB_ROOT/data_structure.md` once.
+3. **所有输出路径以 orchestration_plan.json 为准**: 不自行决定文件存储位置。
 
-For each patient in `patients.json`:
-- Extract clinical dimensions (from structured fields or narrative text)
-- Execute the 4-step inference (disease diagnosis → scenario → molecular → special)
-- Run the retrieval loop
-- Accumulate results in memory
-- Report progress after each patient
+4. **禁止跳过 grep 命令**: orchestrate 生成的命令必须全部执行。
+   可以补充额外命令，但不得删减已有的。
 
-Use the Write tool to save all results to `Output/rag_results.json`. Then skip to Step 5.
+</HARD_CONSTRAINT>
 
-#### Step 3B: Batch Mode (N > 5)
+<HARD_CONSTRAINT>
 
-**Split patients into batches:**
+### Full-Coverage Retrieval Rules
+
+1. **所有 org 必须检索**: 不得因"已找到足够信息"提前停止。
+2. **所有患者临床特征必须纳入检索**: 不仅合并症，转移部位、分子分型、
+   分期、治疗史、肿瘤急症等所有非空字段都应体现在检索中。
+3. **不得以"类似"跳过**: 即使两位患者病情相似，也独立执行全部命令。
+4. **检索深度一致**: 第 1 位和最后 1 位患者的检索深度必须相同。
+
+</HARD_CONSTRAINT>
+
+### Step 3: Execute Retrieval via orchestrate
+
+**所有批处理（无论患者数量）统一使用 orchestrate 驱动。**
 
 ```bash
-python scripts/batch_pipeline.py split --input Output/patients.json --batch-size 5 --output-dir Output/batches/
+python scripts/batch_pipeline.py orchestrate \
+  --patients Output/patients.json --kb-root $KB_ROOT \
+  --output-dir Output/batches --batch-size 5
 ```
 
-Report to user: "已将 N 位患者分为 M 批（每批 5 人），开始逐批检索。"
+读取生成的 `Output/batches/orchestration_plan.json`，报告给用户：
+- 批次数量、待处理数、已完成数（checkpoint）
+- 覆盖的指南组织
+- grep 命令总数
 
-**Check for existing checkpoints (resume support):**
+**对 pending 批次逐一执行（严格顺序）：**
 
-```bash
-ls Output/batches/rag_batch_*.json 2>/dev/null
-```
+在开始处理新批次前，先读取该批次的 prompt 文件。prompt 开头的 CONTEXT_RESET 指令要求你从零开始——不引用前批的任何内容。
 
-If checkpoint files exist and are valid JSON with non-empty `results`, skip those batches.
+1. 读取 `batch_NNN_prompt.md`
+   — 注意开头的 `<CONTEXT_RESET>` 指令，清除前批上下文
+2. 按 prompt 中的 grep 命令逐条执行（不得跳过）
+3. 可补充额外 grep（基于已有结果中的线索）
+4. 提取推荐、证据等级、来源信息
+5. 生成共识/差异分析
+6. 写入 `rag_batch_NNN.json`
+7. 报告进度: "已完成第 NNN 批（X/M 批），共 Y/N 位患者"
 
-**Process each incomplete batch:**
-
-For each `Output/batches/batch_NNN.json` that has no corresponding `rag_batch_NNN.json`:
-
-1. Read `Output/batches/batch_NNN.json` to get this batch's patient list
-2. Read `$KB_ROOT/data_structure.md` (**re-read every batch** to refresh context)
-3. For each patient in this batch:
-   - Execute the 4-step clinical question inference
-   - Run the RAG retrieval loop
-   - Accumulate this batch's results in memory
-4. Use the Write tool to save this batch's results to `Output/batches/rag_batch_NNN.json`
-5. Report progress: "已完成第 NNN 批（X/M 批），共 Y/N 位患者"
+完成后执行 `orchestration_plan.json` 中 `next_steps` 的命令。
 
 <HARD_CONSTRAINT>
 
@@ -1320,7 +1329,14 @@ Report on resume: "检测到已完成 X/M 批（Y 位患者），从第 Z 批继
 - **Never skip** reading `data_structure.md` before searching
 - **Never mix** evidence grading systems across guidelines
 - **Never silently limit** guideline search scope
+- **Never spawn subagents** for batch processing
+- **Never write custom scripts** to replace batch_pipeline.py
+- **Never process batches in parallel**
+- **Never store output** outside orchestration_plan.json 指定的目录
+- **Never skip any grep command** from the prompt
+- **Never skip any org's** search results
+- **Never ignore patient clinical features** in search
 
 ---
 
-*Last Updated: 2026-03-24*
+*Last Updated: 2026-03-25*
