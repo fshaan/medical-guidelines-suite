@@ -247,6 +247,129 @@ def resolve_kb_root(explicit_path: str | None) -> Path:
     sys.exit(1)
 
 
+def scan_knowledge_base(kb_root: Path) -> dict:
+    """自动扫描知识库结构，返回 kb_profile 字典。
+
+    解析策略 (D1): 正则匹配表头定位 markdown 表格。
+    Fallback: 解析失败时通过目录枚举发现 org。
+    """
+    profile = {
+        "orgs": [],
+        "org_files": {},
+        "org_keywords": {},
+        "clinical_question_map": {},
+        "root_index_content": "",
+    }
+
+    root_ds = kb_root / "data_structure.md"
+    root_text = ""
+    if root_ds.exists():
+        root_text = root_ds.read_text(encoding="utf-8")
+        profile["root_index_content"] = root_text
+
+    parsed_orgs = _parse_org_names_from_root(root_text)
+    if not parsed_orgs:
+        print("  ⚠ 根 data_structure.md 解析失败，fallback 到目录枚举", file=sys.stderr)
+        parsed_orgs = _enumerate_org_dirs(kb_root)
+
+    for org in parsed_orgs:
+        org_dir = kb_root / org
+        extracted_dir = org_dir / "extracted"
+        if not extracted_dir.is_dir():
+            print(f"  ⚠ {org}/ 无 extracted/ 子目录，跳过", file=sys.stderr)
+            continue
+        txt_files = sorted(extracted_dir.glob("*.txt"))
+        if not txt_files:
+            print(f"  ⚠ {org}/extracted/ 无 .txt 文件，跳过", file=sys.stderr)
+            continue
+
+        profile["orgs"].append(org)
+        profile["org_files"][org] = [
+            {
+                "file": f.name,
+                "path": str(f),
+                "lines": sum(1 for _ in f.open(encoding="utf-8")),
+            }
+            for f in txt_files
+        ]
+
+        org_ds = org_dir / "data_structure.md"
+        if org_ds.exists():
+            profile["org_keywords"][org] = _parse_keywords_from_ds(
+                org_ds.read_text(encoding="utf-8")
+            )
+
+    profile["clinical_question_map"] = _parse_clinical_question_map(root_text)
+
+    print(f"  知识库扫描完成: {len(profile['orgs'])} 个组织, "
+          f"{sum(len(v) for v in profile['org_files'].values())} 个文件")
+    return profile
+
+
+def _parse_org_names_from_root(text: str) -> list[str]:
+    """从根 data_structure.md 解析组织名（### OrgName/ 模式）"""
+    orgs = []
+    for m in re.finditer(r'^###\s+(\w[\w-]*)/\s*$', text, re.MULTILINE):
+        orgs.append(m.group(1))
+    return orgs
+
+
+def _enumerate_org_dirs(kb_root: Path) -> list[str]:
+    """Fallback: 枚举知识库根目录下的子目录"""
+    return sorted(
+        d.name for d in kb_root.iterdir()
+        if d.is_dir() and not d.name.startswith(".")
+    )
+
+
+def _parse_keywords_from_ds(text: str) -> dict[str, list[str]]:
+    """从 data_structure.md 解析'常用检索关键词'区块"""
+    keywords = {}
+    current_category = None
+    in_keyword_section = False
+
+    for line in text.split("\n"):
+        if "检索关键词" in line and line.startswith("#"):
+            in_keyword_section = True
+            continue
+        if in_keyword_section:
+            if line.startswith("---") or (line.startswith("#") and "检索" not in line):
+                break
+            cat_match = re.match(r'^###\s+(.+)', line)
+            if cat_match:
+                current_category = cat_match.group(1).strip()
+                keywords[current_category] = []
+                continue
+            if current_category and line.startswith("- "):
+                items = [k.strip() for k in line[2:].split(",")]
+                keywords[current_category].extend(items)
+
+    return keywords
+
+
+def _parse_clinical_question_map(text: str) -> dict:
+    """从根 data_structure.md 解析'临床问题→指南映射'表格"""
+    cq_map = {}
+    in_table = False
+
+    for line in text.split("\n"):
+        if "临床问题" in line and "指南映射" in line:
+            in_table = True
+            continue
+        if in_table:
+            if line.startswith("|") and "---" not in line and "临床问题" not in line:
+                cols = [c.strip() for c in line.split("|")[1:-1]]
+                if len(cols) >= 3:
+                    question = cols[0]
+                    primary = [g.strip() for g in cols[1].split(",") if g.strip()]
+                    supplementary = [g.strip() for g in cols[2].split(",") if g.strip()]
+                    cq_map[question] = {"primary": primary, "supplementary": supplementary}
+            elif not line.startswith("|") and line.strip():
+                break
+
+    return cq_map
+
+
 # ─── merge 子命令 ─────────────────────────────────────────────────────────────
 
 
