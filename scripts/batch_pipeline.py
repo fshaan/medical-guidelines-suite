@@ -673,6 +673,8 @@ def generate_batch_prompt(
     lines.append('3. 如果某指南未涉及该问题，记录: "该指南未涉及此临床问题"')
     lines.append("4. 输出必须为简体中文")
     lines.append("5. 可以补充脚本未生成的关键词，但不得删减已有的 grep 命令")
+    lines.append("6. 禁止使用 Agent tool、Task tool 或任何并行/子代理机制。所有 grep 命令必须在当前会话中逐条执行")
+    lines.append("7. 禁止编写脚本批量执行 grep。必须逐条运行并记录结果")
     lines.append("</MANDATORY_RULES>\n")
 
     lines.append(f"## 知识库\n路径: {kb_root}\n")
@@ -740,37 +742,43 @@ def generate_batch_prompt(
 
     lines.append("## 输出要求\n")
     lines.append(f"- 文件路径: {output_file}")
-    lines.append("- 格式: JSON")
+    lines.append("- 格式: JSON（严格按以下模板）")
     lines.append("- 输出语言: 简体中文")
+    lines.append('- 顶层键必须是 `"results"`（不是 `"patients"`）')
     lines.append("")
-    lines.append("每个 `guideline_results` 条目必须包含以下字段:")
+    lines.append("完整 JSON 模板（必须严格遵循此结构）:")
+    template = {
+        "batch_id": f"batch_{batch_idx:03d}",
+        "processed_at": "2026-03-25T10:00:00",
+        "results": [{
+            "patient_id": "T002690492",
+            "patient_name": "章玉林",
+            "clinical_question": "临床问题摘要",
+            "guideline_results": [{
+                "guideline": "NCCN",
+                "version": "2026.V2",
+                "recommendation": "推荐内容（简体中文，≥50字）",
+                "evidence_level": "Category 1",
+                "source_file": "NCCN_GastricCancer_2026.V2_EN.txt",
+                "source_lines": "234-267",
+                "execution_log": [{
+                    "cmd_id": "CMD-P001-NCCN-01",
+                    "match_count": 14,
+                    "first_match_snippet":
+                        "第一个匹配行的文本片段（≥30字，match_count=0时为空字符串）",
+                }],
+            }],
+            "consensus": ["各指南共识点1"],
+            "differences": ["各指南分歧点1"],
+            "execution_summary": {
+                "total_commands_in_prompt": 30,
+                "total_commands_executed": 30,
+                "commands_with_zero_matches": ["CMD-P001-JGCA-02"],
+            },
+        }],
+    }
     lines.append("```json")
-    lines.append('{')
-    lines.append('  "guideline": "NCCN",')
-    lines.append('  "version": "2026.V2",')
-    lines.append('  "recommendation": "推荐内容（简体中文，≥50字）",')
-    lines.append('  "evidence_level": "Category 1",')
-    lines.append('  "source_file": "NCCN_GastricCancer_2026.V2_EN.txt",')
-    lines.append('  "source_lines": "234-267",')
-    lines.append('  "execution_log": [')
-    lines.append('    {')
-    lines.append('      "cmd_id": "CMD-P001-NCCN-01",')
-    lines.append('      "match_count": 14,')
-    lines.append('      "first_match_snippet": "第一个匹配行的文本片段（≥30字，match_count=0时为空字符串）"')
-    lines.append('    }')
-    lines.append('  ]')
-    lines.append('}')
-    lines.append("```")
-    lines.append("")
-    lines.append("每位患者必须包含 `execution_summary`:")
-    lines.append("```json")
-    lines.append('{')
-    lines.append('  "execution_summary": {')
-    lines.append('    "total_commands_in_prompt": 12,')
-    lines.append('    "total_commands_executed": 12,')
-    lines.append('    "commands_with_zero_matches": ["CMD-P001-JGCA-02"]')
-    lines.append('  }')
-    lines.append('}')
+    lines.append(json.dumps(template, ensure_ascii=False, indent=2))
     lines.append("```")
 
     return "\n".join(lines)
@@ -930,6 +938,35 @@ def _auto_split_batch(
     return result
 
 
+# ─── 共用 helper ──────────────────────────────────────────────────────────────
+
+
+def _extract_patient_list(batch_data: dict) -> list[dict]:
+    """从 batch JSON 提取患者列表。
+
+    兼容 "results"/"patients" 两种 key，自动将扁平结构包装为 clinical_questions 嵌套。
+    注意：原地修改 batch_data 中的 dict（pop 操作）。
+    """
+    patients = (
+        batch_data.get("results")
+        if "results" in batch_data
+        else batch_data.get("patients", [])
+    )
+    if not patients and batch_data.get("batch_id"):
+        print(
+            f"  ⚠ batch {batch_data['batch_id']} 未找到 results/patients 键",
+            file=sys.stderr,
+        )
+    for p in patients:
+        if not p.get("clinical_questions") and p.get("guideline_results"):
+            p["clinical_questions"] = [{
+                "guideline_results": p.pop("guideline_results"),
+                "consensus": p.pop("consensus", []),
+                "differences": p.pop("differences", []),
+            }]
+    return patients
+
+
 # ─── merge 子命令 ─────────────────────────────────────────────────────────────
 
 
@@ -947,7 +984,7 @@ def cmd_merge(args):
 
     for bf in batch_files:
         batch_data = json.loads(bf.read_text(encoding="utf-8"))
-        for result in batch_data.get("results", []):
+        for result in _extract_patient_list(batch_data):
             pid = result.get("patient_id")
             if pid in patient_ids_seen:
                 print(f"  ⚠ 跳过重复患者: {pid} (来自 {bf.name})")
@@ -958,15 +995,8 @@ def cmd_merge(args):
             if "batch_source" not in result:
                 result["batch_source"] = bf.stem.replace("rag_", "")  # "batch_001"
 
-            # 结构规范化：确保 consensus/differences 在 clinical_questions 内
-            for q in result.get("clinical_questions", []):
-                if "consensus" not in q:
-                    q["consensus"] = result.get("consensus", [])
-                if "differences" not in q:
-                    q["differences"] = result.get("differences", [])
-                if "guideline_results" not in q:
-                    q["guideline_results"] = result.get("guideline_results", [])
-            # 清理根级别的冗余字段（规范化后不再需要）
+            # _extract_patient_list 已完成扁平→嵌套包装
+            # 清理根级别的冗余字段（兼容 LLM 同时输出两种结构的情况）
             for key in ("consensus", "differences", "guideline_results"):
                 result.pop(key, None)
 
@@ -1164,7 +1194,7 @@ def _verify_batch_results(
     json_cmd_ids = set()
     json_cmd_details = {}  # cmd_id -> {match_count, snippet, org}
 
-    for result in batch_data.get("results", []):
+    for result in _extract_patient_list(batch_data):
         pid = result.get("patient_id", "?")
 
         # V2: 计数一致性 — 通过 execution_log 中的 CMD-ID 前缀推断 patient_index
@@ -1300,9 +1330,11 @@ def cmd_verify_batch(args):
             total_pass += 1
             prompt_cmds = _parse_prompt_commands(prompt_text)
             # 统计 JSON 中实际记录的 CMD-ID 数
+            # 注意：_verify_batch_results 已通过 _extract_patient_list 原地包装了
+            # batch_data，此处 clinical_questions 已就绪
             json_cmd_count = sum(
                 len(entry.get("execution_log", []))
-                for r in batch_data.get("results", [])
+                for r in _extract_patient_list(batch_data)
                 for q in r.get("clinical_questions", [])
                 for entry in q.get("guideline_results", [])
             )
