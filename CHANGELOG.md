@@ -5,6 +5,19 @@ All notable changes to the Medical Guidelines Suite will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.1] - 2026-03-27
+
+### Fixed
+- **merge 输出 0 患者** — 修复 prompt 未指定完整 JSON 顶层结构导致 LLM 输出 `"patients"` 键而代码读 `"results"` 键的 schema drift 问题
+- **扁平→嵌套结构兼容** — 新增 `_extract_patient_list` helper，自动识别 `results`/`patients` 键并将扁平 `guideline_results` 包装为 `clinical_questions` 嵌套结构
+- **`[] or fallback` 布尔短路陷阱** — 使用显式 `"results" in batch_data` 检查替代 `or` 短路，避免空列表错误回退
+
+### Added
+- **完整 JSON 输出模板** — batch prompt 现在包含完整的顶层 JSON 结构模板，明确 `"results"` 键名和扁平结构要求
+- **Anti-subagent 指令** — batch prompt 的 MANDATORY_RULES 新增规则 6-7，禁止 LLM 使用 Agent/Task tool 或编写脚本批量执行 grep
+- **静默失败警告** — 当 batch 文件有 `batch_id` 但无法提取患者时，输出 stderr 警告
+- **10 个新测试** (80 total) — _extract_patient_list helper (5)、prompt 模板 (2)、merge 兼容性 (3)
+
 ## [2.3.0] - 2026-03-25
 
 ### Added
