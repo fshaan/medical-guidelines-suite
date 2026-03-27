@@ -1,6 +1,6 @@
 ---
 name: medical-guidelines-suite
-version: 2.1.0
+version: 2.3.1
 description: |
   Medical Clinical Guidelines Knowledge Suite - Build, Query & Batch Process.
 
@@ -1357,4 +1357,4 @@ Report on resume: "检测到已完成 X/M 批（Y 位患者），从第 Z 批继
 
 ---
 
-*Last Updated: 2026-03-25*
+*Last Updated: 2026-03-27*

@@ -66,7 +66,7 @@ medical-guidelines-suite/
 │   ├── data_structure_root.md  # Root index template
 │   ├── data_structure_org.md   # Organization index template
 │   └── report_template.pptx    # PPTX slide template
-├── tests/                      # pytest suite (70 tests)
+├── tests/                      # pytest suite (80 tests)
 ├── docs/                       # Design documents
 ├── Input/                      # User input files (xlsx, patients.json)
 └── Output/                     # Generated outputs (auto-created)
@@ -107,7 +107,7 @@ python scripts/batch_pipeline.py generate --input Output/rag_results.json --form
 ### Testing
 
 ```bash
-python -m pytest tests/ -v          # Run all tests (70)
+python -m pytest tests/ -v          # Run all tests (80)
 python -m pytest tests/ -v -k scan  # Run specific tests
 ```
 
@@ -137,4 +137,4 @@ python -m pytest tests/ -v -k scan  # Run specific tests
 
 ---
 
-*Last Updated: 2026-03-25*
+*Last Updated: 2026-03-27*
