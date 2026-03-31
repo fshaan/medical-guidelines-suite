@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-from batch_pipeline import ProfileConfig, PROFILE_FULL, PROFILE_SLIM, get_profile, generate_grep_commands, filter_orgs_by_disease, generate_batch_prompt
+from batch_pipeline import ProfileConfig, PROFILE_FULL, PROFILE_SLIM, get_profile, generate_grep_commands, filter_orgs_by_disease, generate_batch_prompt, _is_flat_format, _aggregate_flat_results, _generate_consensus
 
 
 class TestProfileConfig:
@@ -169,3 +169,73 @@ class TestSlimPrompt:
             self._make_batch(), self._make_kb_profile(), "/kb", 1, 1,
         )
         assert "execution_log" in prompt
+
+
+class TestFlatFormatDetection:
+    def test_detects_flat_format(self):
+        results = [{"patient_id": "P1", "guideline": "NCCN", "recommendation": "..."}]
+        assert _is_flat_format(results) is True
+
+    def test_detects_nested_format(self):
+        results = [{"patient_id": "P1", "guideline_results": [{"guideline": "NCCN"}]}]
+        assert _is_flat_format(results) is False
+
+    def test_empty_results(self):
+        assert _is_flat_format([]) is False
+
+
+class TestAggregateFlatResults:
+    def test_groups_by_patient_id(self):
+        flat = [
+            {"patient_id": "P1", "patient_name": "张三", "clinical_question": "Q1",
+             "guideline": "NCCN", "recommendation": "推荐A", "evidence_level": "1", "source_file": "a.txt"},
+            {"patient_id": "P1", "patient_name": "张三", "clinical_question": "Q1",
+             "guideline": "JGCA", "recommendation": "推荐B", "evidence_level": "强", "source_file": "b.txt"},
+            {"patient_id": "P2", "patient_name": "李四", "clinical_question": "Q2",
+             "guideline": "NCCN", "recommendation": "推荐C", "evidence_level": "2A", "source_file": "c.txt"},
+        ]
+        result = _aggregate_flat_results(flat)
+        assert len(result) == 2
+        p1 = [r for r in result if r["patient_id"] == "P1"][0]
+        assert len(p1["guideline_results"]) == 2
+        assert p1["patient_name"] == "张三"
+
+    def test_single_patient_single_guideline(self):
+        flat = [
+            {"patient_id": "P1", "patient_name": "A", "clinical_question": "Q",
+             "guideline": "NCCN", "recommendation": "R", "evidence_level": "1", "source_file": "f.txt"},
+        ]
+        result = _aggregate_flat_results(flat)
+        assert len(result) == 1
+        assert len(result[0]["guideline_results"]) == 1
+
+    def test_empty_input(self):
+        assert _aggregate_flat_results([]) == []
+
+
+class TestGenerateConsensus:
+    def test_finds_common_keywords(self):
+        patient = {
+            "guideline_results": [
+                {"guideline": "NCCN", "recommendation": "化疗,联合免疫"},
+                {"guideline": "JGCA", "recommendation": "化疗,手术切除"},
+            ]
+        }
+        consensus, diffs = _generate_consensus(patient)
+        assert len(consensus) > 0
+
+    def test_single_guideline_no_consensus(self):
+        patient = {
+            "guideline_results": [
+                {"guideline": "NCCN", "recommendation": "推荐化疗"},
+            ]
+        }
+        consensus, diffs = _generate_consensus(patient)
+        assert consensus == []
+        assert diffs == []
+
+    def test_empty_guideline_results(self):
+        patient = {"guideline_results": []}
+        consensus, diffs = _generate_consensus(patient)
+        assert consensus == []
+        assert diffs == []

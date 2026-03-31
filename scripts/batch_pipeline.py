@@ -1137,6 +1137,58 @@ def _auto_split_batch(
 # ─── 共用 helper ──────────────────────────────────────────────────────────────
 
 
+def _is_flat_format(results: list[dict]) -> bool:
+    """检测 slim 扁平格式（result 含 guideline 键且无 guideline_results）。"""
+    return bool(results) and "guideline" in results[0] and "guideline_results" not in results[0]
+
+
+def _aggregate_flat_results(flat_results: list[dict]) -> list[dict]:
+    """将 slim 扁平 results 按 patient_id 聚合为 full 兼容格式。"""
+    if not flat_results:
+        return []
+    grouped = {}
+    for r in flat_results:
+        pid = r["patient_id"]
+        if pid not in grouped:
+            grouped[pid] = {
+                "patient_id": pid,
+                "patient_name": r.get("patient_name", ""),
+                "clinical_question": r.get("clinical_question", ""),
+                "guideline_results": [],
+            }
+        grouped[pid]["guideline_results"].append({
+            "guideline": r.get("guideline", ""),
+            "recommendation": r.get("recommendation", ""),
+            "evidence_level": r.get("evidence_level", ""),
+            "source_file": r.get("source_file", ""),
+        })
+    return list(grouped.values())
+
+
+def _generate_consensus(patient: dict) -> tuple[list[str], list[str]]:
+    """基于多 guideline 推荐文本生成 consensus/differences。"""
+    recs = patient.get("guideline_results", [])
+    if len(recs) < 2:
+        return [], []
+
+    all_kw_sets = []
+    for r in recs:
+        text = r.get("recommendation", "")
+        kws = set(re.findall(r'[\u4e00-\u9fff]{2,}', text))
+        all_kw_sets.append(kws)
+
+    common = set.intersection(*all_kw_sets) if all_kw_sets else set()
+    consensus = [f"各指南均提及: {'、'.join(sorted(common)[:5])}"] if common else []
+
+    diffs = []
+    for i, r in enumerate(recs):
+        unique = all_kw_sets[i] - common
+        if unique:
+            diffs.append(f"{r['guideline']}独有: {'、'.join(sorted(unique)[:3])}")
+
+    return consensus, diffs
+
+
 def _extract_patient_list(batch_data: dict) -> list[dict]:
     """从 batch JSON 提取患者列表。
 
@@ -1153,6 +1205,19 @@ def _extract_patient_list(batch_data: dict) -> list[dict]:
             f"  ⚠ batch {batch_data['batch_id']} 未找到 results/patients 键",
             file=sys.stderr,
         )
+
+    # Slim flat format: aggregate and generate consensus
+    if patients and _is_flat_format(patients):
+        patients = _aggregate_flat_results(patients)
+        for p in patients:
+            consensus, diffs = _generate_consensus(p)
+            p["clinical_questions"] = [{
+                "guideline_results": p.pop("guideline_results"),
+                "consensus": consensus,
+                "differences": diffs,
+            }]
+        return patients
+
     for p in patients:
         if not p.get("clinical_questions") and p.get("guideline_results"):
             p["clinical_questions"] = [{
