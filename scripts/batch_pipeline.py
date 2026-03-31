@@ -19,8 +19,51 @@ import locale
 import os
 import re
 import sys
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+
+
+# ─── Profile 配置 ────────────────────────────────────────────────────────────
+
+
+SLIM_DIMENSION_GROUPS = [
+    ["diagnosis_keywords", "staging_keywords", "metastasis_keywords"],
+    ["molecular_keywords", "marker_keywords"],
+    ["treatment_keywords", "event_keywords"],
+    ["comorbidity_keywords", "special_keywords"],
+]
+
+
+@dataclass
+class ProfileConfig:
+    name: str = "full"
+    dimension_groups: list | None = None
+    min_rec_length: int = 50
+    skip_anti_laziness: bool = False
+    skip_snippet_verify: bool = False
+    micro_checkpoints: bool = False
+    flat_json: bool = False
+    org_filter_by_disease: bool = False
+
+
+PROFILE_FULL = ProfileConfig()
+
+PROFILE_SLIM = ProfileConfig(
+    name="slim",
+    dimension_groups=SLIM_DIMENSION_GROUPS,
+    min_rec_length=20,
+    skip_anti_laziness=True,
+    skip_snippet_verify=True,
+    micro_checkpoints=True,
+    flat_json=True,
+    org_filter_by_disease=True,
+)
+
+
+def get_profile(name: str) -> ProfileConfig:
+    """获取命名 profile 配置。"""
+    return {"full": PROFILE_FULL, "slim": PROFILE_SLIM}[name]
 
 
 # ─── parse 子命令 ─────────────────────────────────────────────────────────────
@@ -427,7 +470,7 @@ def generate_grep_commands(
         files = kb_profile["org_files"].get(org, [])
         if not files:
             continue
-        glob_pattern = str(kb_root / org / "extracted" / "*.txt")
+        extracted_dir = str(kb_root / org / "extracted")
 
         for dim_name, keywords in dimensions.items():
             all_variants = []
@@ -438,7 +481,7 @@ def generate_grep_commands(
                 continue
 
             pattern = "\\|".join(all_variants)
-            cmd = f'grep -n -i "{pattern}" {glob_pattern}'
+            cmd = f'grep -n -i --include="*.txt" -r "{pattern}" "{extracted_dir}"'
             commands.append({
                 "org": org,
                 "dimension": dim_name,
