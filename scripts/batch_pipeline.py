@@ -990,6 +990,10 @@ def cmd_orchestrate(args):
         print("知识库为空（无有效 org 目录）", file=sys.stderr)
         sys.exit(1)
 
+    config = get_profile(getattr(args, "profile", "full"))
+    if config.name == "slim":
+        print(f"  Profile: slim（小模型优化模式）")
+
     patients_path = Path(args.patients).resolve()
     if not patients_path.exists():
         print(f"患者文件不存在: {patients_path}", file=sys.stderr)
@@ -1005,7 +1009,12 @@ def cmd_orchestrate(args):
     total_kw = 0
     for p in patients:
         features = extract_patient_features(p)
-        grep_cmds = generate_grep_commands(features, kb_profile, kb_root)
+        if config.org_filter_by_disease:
+            disease = p.get("disease_type", "")
+            filtered_profile = {**kb_profile, "orgs": filter_orgs_by_disease(kb_profile, disease)}
+            grep_cmds = generate_grep_commands(features, filtered_profile, kb_root, config=config)
+        else:
+            grep_cmds = generate_grep_commands(features, kb_profile, kb_root, config=config)
         enriched = {**p, "features": features, "grep_commands": grep_cmds}
         enriched_patients.append(enriched)
         total_grep += len(grep_cmds)
@@ -1018,7 +1027,7 @@ def cmd_orchestrate(args):
     final_batches = []
     for batch in batches:
         prompt = generate_batch_prompt(batch, kb_profile, str(kb_root),
-                                       len(final_batches) + 1, len(batches))
+                                       len(final_batches) + 1, len(batches), config=config)
         tokens = estimate_tokens(prompt)
         if tokens > max_tokens and len(batch) > 1:
             sub_batches = _auto_split_batch(batch, kb_profile, str(kb_root), max_tokens)
@@ -2308,6 +2317,8 @@ def main():
     p_orch.add_argument("--batch-size", type=int, default=5, help="每批患者数 (默认 5)")
     p_orch.add_argument("--max-prompt-tokens", type=int, default=80000,
                          help="单个 prompt 最大 token 数 (默认 80000)")
+    p_orch.add_argument("--profile", choices=["full", "slim"], default="full",
+                        help="处理模式 (默认 full，slim 适用于小模型)")
 
     # merge
     p_merge = sub.add_parser("merge", help="合并批次结果为 rag_results.json")
@@ -2319,11 +2330,15 @@ def main():
     p_validate.add_argument("--input", required=True, help="rag_results.json 路径")
     p_validate.add_argument("--patients", help="patients.json 路径（可选，用于完整性对比）")
     p_validate.add_argument("--kb-profile", help="orchestration_plan.json 路径（可选，用于组织覆盖率检查）")
+    p_validate.add_argument("--profile", choices=["full", "slim"], default="full",
+                            help="验证模式 (默认 full)")
 
     # verify-batch
     p_verify = sub.add_parser("verify-batch", help="验证批次执行证据的真实性")
     p_verify.add_argument("--input-dir", required=True, help="批次结果所在目录")
     p_verify.add_argument("--kb-root", default=None, help="知识库根路径（可选，启用 snippet 校验）")
+    p_verify.add_argument("--profile", choices=["full", "slim"], default="full",
+                          help="验证模式 (默认 full)")
 
     # generate
     p_gen = sub.add_parser("generate", help="从 RAG 结果生成产出物")

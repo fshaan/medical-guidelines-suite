@@ -301,3 +301,30 @@ class TestValidateSlim:
         with pytest.raises(SystemExit) as exc:
             cmd_validate(args)
         assert exc.value.code == 0
+
+
+import subprocess
+
+
+class TestCLIIntegration:
+    def test_orchestrate_accepts_profile_flag(self):
+        result = subprocess.run(
+            ["python3", "scripts/batch_pipeline.py", "orchestrate", "--help"],
+            capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        assert "--profile" in result.stdout
+        assert "slim" in result.stdout
+
+    def test_validate_accepts_profile_flag(self):
+        result = subprocess.run(
+            ["python3", "scripts/batch_pipeline.py", "validate", "--help"],
+            capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        assert "--profile" in result.stdout
+
+    def test_verify_batch_accepts_profile_flag(self):
+        result = subprocess.run(
+            ["python3", "scripts/batch_pipeline.py", "verify-batch", "--help"],
+            capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        assert "--profile" in result.stdout
