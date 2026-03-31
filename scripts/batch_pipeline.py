@@ -763,6 +763,82 @@ def estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
+def _generate_slim_prompt(
+    batch: list[dict],
+    kb_profile: dict,
+    kb_root: str,
+    batch_idx: int,
+    total_batches: int,
+    output_file: str,
+    config: "ProfileConfig",
+) -> str:
+    """生成 slim profile 的简化 batch prompt。"""
+    lines = []
+    lines.append(f"# 批次 {batch_idx:03d}/{total_batches:03d} 检索任务\n")
+    lines.append("<CONTEXT_RESET>")
+    lines.append("请忽略此消息之前的所有检索结果和患者信息。")
+    lines.append("以下是一个全新的、独立的批次任务。")
+    lines.append("</CONTEXT_RESET>\n")
+
+    lines.append("## 规则")
+    lines.append("- 逐条执行 grep 命令，不得跳过")
+    lines.append("- 不得调用任何工具、函数或子代理")
+    lines.append("- 所有输出使用简体中文")
+    lines.append("- 禁止编写脚本批量执行\n")
+
+    lines.append(f"## 知识库\n路径: {kb_root}\n")
+
+    # 步骤 1: grep 命令 + 微检查点
+    lines.append("## 步骤 1：执行 grep 命令\n")
+
+    total_cmds = 0
+    for pi, patient in enumerate(batch, 1):
+        pid = patient.get("patient_id", "?")
+        pname = patient.get("patient_name", "?")
+        grep_cmds = patient.get("grep_commands", [])
+
+        lines.append(f"### 患者 P{pi:03d}: {pname} ({pid})\n")
+
+        for ci, gc in enumerate(grep_cmds, 1):
+            cmd_id = f"CMD-P{pi:03d}-{gc['org']}-{ci:02d}"
+            lines.append(f"{cmd_id}: {gc['command']}")
+            total_cmds += 1
+
+        if config.micro_checkpoints and grep_cmds:
+            lines.append(f"\n【自检 P{pi:03d}】确认执行了全部 {len(grep_cmds)} 条命令。\n")
+
+    # 步骤 2: JSON 输出
+    lines.append("## 步骤 2：输出 JSON\n")
+    lines.append("根据 grep 结果，输出以下格式（严格遵守，不得添加或省略字段）：\n")
+    lines.append("```json")
+    lines.append("{")
+    lines.append(f'  "batch_id": "batch_{batch_idx:03d}",')
+    lines.append('  "processed_at": "ISO时间戳",')
+    lines.append('  "results": [')
+    lines.append('    {')
+    lines.append('      "patient_id": "实际ID",')
+    lines.append('      "patient_name": "实际姓名",')
+    lines.append('      "clinical_question": "一句话临床问题摘要",')
+    lines.append('      "guideline": "NCCN",')
+    lines.append(f'      "recommendation": ">={config.min_rec_length}字推荐内容（简体中文）",')
+    lines.append('      "evidence_level": "证据等级",')
+    lines.append('      "source_file": "匹配的文件名"')
+    lines.append('    }')
+    lines.append('  ]')
+    lines.append("}")
+    lines.append("```\n")
+
+    if config.micro_checkpoints:
+        lines.append("【最终自检】")
+        lines.append(f"- results 条目总数应 = 患者数 x guideline数")
+        lines.append(f"- 每条 recommendation >= {config.min_rec_length} 字\n")
+
+    if output_file:
+        lines.append(f"将完整 JSON 保存到: {output_file}")
+
+    return "\n".join(lines)
+
+
 def generate_batch_prompt(
     batch: list[dict],
     kb_profile: dict,
@@ -770,8 +846,13 @@ def generate_batch_prompt(
     batch_idx: int,
     total_batches: int,
     output_file: str = "",
+    config: "ProfileConfig | None" = None,
 ) -> str:
     """生成自包含的批次 prompt 文件内容。"""
+    if config and config.flat_json:
+        return _generate_slim_prompt(
+            batch, kb_profile, kb_root, batch_idx, total_batches, output_file, config,
+        )
     lines = []
 
     lines.append(f"# 批次 {batch_idx:03d}/{total_batches:03d} 检索任务\n")

@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-from batch_pipeline import ProfileConfig, PROFILE_FULL, PROFILE_SLIM, get_profile, generate_grep_commands, filter_orgs_by_disease
+from batch_pipeline import ProfileConfig, PROFILE_FULL, PROFILE_SLIM, get_profile, generate_grep_commands, filter_orgs_by_disease, generate_batch_prompt
 
 
 class TestProfileConfig:
@@ -116,3 +116,56 @@ class TestGrepGenerationSlim:
         cmds_default = generate_grep_commands(features, kb, Path("/kb"))
         cmds_explicit = generate_grep_commands(features, kb, Path("/kb"), config=None)
         assert len(cmds_default) == len(cmds_explicit)
+
+
+class TestSlimPrompt:
+    def _make_batch(self):
+        return [{
+            "patient_id": "P001",
+            "patient_name": "张三",
+            "disease_type": "胃癌",
+            "features": {
+                "diagnosis_keywords": ["胃癌"],
+                "all_keywords": ["胃癌"],
+            },
+            "grep_commands": [
+                {"org": "NCCN", "dimension": "diagnosis_staging_metastasis",
+                 "command": 'grep -n -i --include="*.txt" -r "胃癌" "/kb/NCCN/extracted"'},
+            ],
+        }]
+
+    def _make_kb_profile(self):
+        return {
+            "orgs": ["NCCN"],
+            "org_files": {"NCCN": [{"file": "NCCN_Gastric.txt"}]},
+            "root_index_content": "test index",
+        }
+
+    def test_slim_prompt_contains_micro_checkpoints(self):
+        config = get_profile("slim")
+        prompt = generate_batch_prompt(
+            self._make_batch(), self._make_kb_profile(), "/kb", 1, 1, config=config,
+        )
+        assert "自检" in prompt
+
+    def test_slim_prompt_uses_flat_json_template(self):
+        config = get_profile("slim")
+        prompt = generate_batch_prompt(
+            self._make_batch(), self._make_kb_profile(), "/kb", 1, 1, config=config,
+        )
+        assert '"guideline":' in prompt
+        assert "guideline_results" not in prompt
+
+    def test_slim_prompt_no_execution_log(self):
+        config = get_profile("slim")
+        prompt = generate_batch_prompt(
+            self._make_batch(), self._make_kb_profile(), "/kb", 1, 1, config=config,
+        )
+        assert "execution_log" not in prompt
+        assert "execution_summary" not in prompt
+
+    def test_full_prompt_unchanged(self):
+        prompt = generate_batch_prompt(
+            self._make_batch(), self._make_kb_profile(), "/kb", 1, 1,
+        )
+        assert "execution_log" in prompt
