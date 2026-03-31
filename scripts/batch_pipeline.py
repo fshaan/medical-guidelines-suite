@@ -440,10 +440,51 @@ def escape_grep_keyword(keyword: str) -> list[str]:
     return variants
 
 
+# 疾病类型 → 搜索关键词映射
+_DISEASE_KEYWORD_MAP = {
+    "胃": ["gastric", "stomach", "胃"],
+    "肺": ["lung", "pulmonary", "肺"],
+    "乳腺": ["breast", "乳腺"],
+    "结直肠": ["colorectal", "colon", "rectal", "结直肠", "结肠", "直肠"],
+    "肝": ["liver", "hepat", "肝"],
+    "食管": ["esophag", "食管"],
+    "胰腺": ["pancrea", "胰腺"],
+}
+
+
+def _extract_disease_keywords(disease_type: str) -> list[str]:
+    """从 disease_type 提取中英文疾病关键词。"""
+    keywords = []
+    for cn_key, kw_list in _DISEASE_KEYWORD_MAP.items():
+        if cn_key in (disease_type or ""):
+            keywords.extend(kw_list)
+    if not keywords and disease_type:
+        keywords.append(disease_type)
+    return keywords
+
+
+def filter_orgs_by_disease(kb_profile: dict, disease_type: str) -> list[str]:
+    """根据 disease_type 过滤 KB 中相关的 org。"""
+    disease_kws = _extract_disease_keywords(disease_type)
+    if not disease_kws:
+        return kb_profile["orgs"]
+    relevant = []
+    for org in kb_profile["orgs"]:
+        files = kb_profile["org_files"].get(org, [])
+        if any(
+            kw.lower() in f["file"].lower()
+            for f in files
+            for kw in disease_kws
+        ):
+            relevant.append(org)
+    return relevant or kb_profile["orgs"]
+
+
 def generate_grep_commands(
     patient_features: dict,
     kb_profile: dict,
     kb_root: "Path",
+    config: "ProfileConfig | None" = None,
 ) -> list[dict]:
     """为一位患者生成覆盖所有 org 的 grep 命令。
 
@@ -453,6 +494,37 @@ def generate_grep_commands(
     all_kw = patient_features.get("all_keywords", [])
     if not all_kw:
         return []
+
+    # Slim: grouped dimensions
+    if config and config.dimension_groups:
+        commands = []
+        orgs = kb_profile["orgs"]
+        for org in orgs:
+            files = kb_profile["org_files"].get(org, [])
+            if not files:
+                continue
+            extracted_dir = str(kb_root / org / "extracted")
+            for group in config.dimension_groups:
+                merged_kw = []
+                for dim_name in group:
+                    merged_kw.extend(patient_features.get(dim_name, []))
+                if not merged_kw:
+                    continue
+                merged_kw = list(dict.fromkeys(merged_kw))[:15]
+                all_variants = []
+                for kw in merged_kw:
+                    all_variants.extend(escape_grep_keyword(kw))
+                if not all_variants:
+                    continue
+                pattern = "\\|".join(all_variants)
+                group_name = "_".join(d.replace("_keywords", "") for d in group)
+                cmd = f'grep -n -i --include="*.txt" -r "{pattern}" "{extracted_dir}"'
+                commands.append({
+                    "org": org,
+                    "dimension": group_name,
+                    "command": cmd,
+                })
+        return commands
 
     dimensions = {}
     for key, val in patient_features.items():
