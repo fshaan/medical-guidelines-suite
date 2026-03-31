@@ -1030,7 +1030,7 @@ def cmd_orchestrate(args):
                                        len(final_batches) + 1, len(batches), config=config)
         tokens = estimate_tokens(prompt)
         if tokens > max_tokens and len(batch) > 1:
-            sub_batches = _auto_split_batch(batch, kb_profile, str(kb_root), max_tokens)
+            sub_batches = _auto_split_batch(batch, kb_profile, str(kb_root), max_tokens, config=config)
             final_batches.extend(sub_batches)
         else:
             final_batches.append(batch)
@@ -1072,7 +1072,7 @@ def cmd_orchestrate(args):
         if status == "pending":
             prompt = generate_batch_prompt(
                 batch, kb_profile, str(kb_root), bi, len(final_batches),
-                output_file=str(output_file),
+                output_file=str(output_file), config=config,
             )
             prompt_file.write_text(prompt, encoding="utf-8")
 
@@ -1124,6 +1124,7 @@ def _auto_split_batch(
     kb_profile: dict,
     kb_root: str,
     max_tokens: int,
+    config: "ProfileConfig | None" = None,
 ) -> list[list[dict]]:
     """D3: 递归拆分超限批次"""
     if len(batch) <= 1:
@@ -1134,9 +1135,9 @@ def _auto_split_batch(
     result = []
 
     for sub in (left, right):
-        prompt = generate_batch_prompt(sub, kb_profile, kb_root, 1, 999)
+        prompt = generate_batch_prompt(sub, kb_profile, kb_root, 1, 999, config=config)
         if estimate_tokens(prompt) > max_tokens and len(sub) > 1:
-            result.extend(_auto_split_batch(sub, kb_profile, kb_root, max_tokens))
+            result.extend(_auto_split_batch(sub, kb_profile, kb_root, max_tokens, config=config))
         else:
             result.append(sub)
 
@@ -1157,7 +1158,7 @@ def _aggregate_flat_results(flat_results: list[dict]) -> list[dict]:
         return []
     grouped = {}
     for r in flat_results:
-        pid = r["patient_id"]
+        pid = r.get("patient_id", "UNKNOWN")
         if pid not in grouped:
             grouped[pid] = {
                 "patient_id": pid,
@@ -1493,8 +1494,8 @@ def _verify_batch_results(
                     f"但 prompt 实际有 {actual_prompt_count} 条命令"
                 )
 
-        # 如果患者完全没有 execution_log，也报错
-        if not patient_cmd_ids and exec_summary:
+        # 如果患者完全没有 execution_log，也报错（slim 模式跳过，不要求 execution_log）
+        if not patient_cmd_ids and exec_summary and not (config and config.skip_snippet_verify):
             errors.append(
                 f"[{pid}] 无 execution_log 条目（execution_summary 存在但无执行记录）"
             )
@@ -1516,10 +1517,11 @@ def _verify_batch_results(
                         "patient_id": pid,
                     }
 
-    # V1: 命令覆盖率
-    missing_cmds = prompt_cmd_ids - json_cmd_ids
-    for cmd_id in sorted(missing_cmds):
-        errors.append(f"{cmd_id} 未在 execution_log 中找到")
+    # V1: 命令覆盖率（slim 模式跳过，不要求 execution_log）
+    if not (config and config.skip_snippet_verify):
+        missing_cmds = prompt_cmd_ids - json_cmd_ids
+        for cmd_id in sorted(missing_cmds):
+            errors.append(f"{cmd_id} 未在 execution_log 中找到")
 
     # V3: snippet 真实性（需要 kb_root）
     if kb_root and not (config and config.skip_snippet_verify):
@@ -1602,11 +1604,12 @@ def cmd_verify_batch(args):
             total_pass += 1
             prompt_cmds = _parse_prompt_commands(prompt_text)
             # 统计 JSON 中实际记录的 CMD-ID 数
-            # 注意：_verify_batch_results 已通过 _extract_patient_list 原地包装了
-            # batch_data，此处 clinical_questions 已就绪
+            # _verify_batch_results 已通过 _extract_patient_list 原地包装了
+            # batch_data，此处直接读取已变换的 results（避免重复调用）
+            transformed = batch_data.get("results") or batch_data.get("patients", [])
             json_cmd_count = sum(
                 len(entry.get("execution_log", []))
-                for r in _extract_patient_list(batch_data)
+                for r in transformed
                 for q in r.get("clinical_questions", [])
                 for entry in q.get("guideline_results", [])
             )
