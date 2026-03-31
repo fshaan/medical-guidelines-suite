@@ -1433,6 +1433,7 @@ def _verify_batch_results(
     prompt_text: str,
     batch_data: dict,
     kb_root: str = "",
+    config: "ProfileConfig | None" = None,
 ) -> tuple:
     """验证单个批次的执行证据。
 
@@ -1512,7 +1513,7 @@ def _verify_batch_results(
         errors.append(f"{cmd_id} 未在 execution_log 中找到")
 
     # V3: snippet 真实性（需要 kb_root）
-    if kb_root:
+    if kb_root and not (config and config.skip_snippet_verify):
         for cmd_id, detail in json_cmd_details.items():
             snippet = detail["snippet"]
             source_file = detail["source_file"]
@@ -1536,6 +1537,7 @@ def _verify_batch_results(
 
 def cmd_verify_batch(args):
     """verify-batch 子命令入口 — 验证批次执行证据的真实性"""
+    config = get_profile(getattr(args, 'profile', 'full'))
     input_dir = Path(args.input_dir).resolve()
     kb_root = ""
     if hasattr(args, 'kb_root') and args.kb_root:
@@ -1572,7 +1574,7 @@ def cmd_verify_batch(args):
             print(f"  {bf.stem}: ✗ FAIL (文件损坏: {e})")
             continue
 
-        errors, warns = _verify_batch_results(prompt_text, batch_data, kb_root)
+        errors, warns = _verify_batch_results(prompt_text, batch_data, kb_root, config=config)
 
         if errors:
             total_fail += 1
@@ -1612,6 +1614,7 @@ def cmd_verify_batch(args):
 
 def cmd_validate(args):
     """validate 子命令入口 — 检查 rag_results.json 质量与完整性"""
+    config = get_profile(getattr(args, 'profile', 'full'))
     input_path = Path(args.input).resolve()
     if not input_path.exists():
         print(f"文件不存在: {input_path}", file=sys.stderr)
@@ -1662,7 +1665,7 @@ def cmd_validate(args):
             for g in grs:
                 rec = g.get("recommendation", "")
                 total_len += len(rec)
-                if len(rec) < 50:
+                if len(rec) < config.min_rec_length:
                     warnings.append(
                         f"[{pid}] Q{qi} {g.get('guideline', '')} 推荐过短 ({len(rec)}字)"
                     )
@@ -1683,7 +1686,7 @@ def cmd_validate(args):
         rec_lengths.append((pid, total_len))
 
     # 跨患者一致性：检测质量下降
-    if len(rec_lengths) >= 3:
+    if not config.skip_anti_laziness and len(rec_lengths) >= 3:
         lengths = [l for _, l in rec_lengths if l > 0]
         if lengths:
             avg_len = sum(lengths) / len(lengths)
@@ -1693,13 +1696,14 @@ def cmd_validate(args):
                         f"[{pid}] 推荐总长度异常偏短 ({length}字 vs 平均 {avg_len:.0f}字)"
                     )
 
-    # 跨批次相似度检测 (D9)
-    cross_warnings = _check_cross_batch_similarity(results)
-    warnings.extend(cross_warnings)
+    if not config.skip_anti_laziness:
+        # 跨批次相似度检测 (D9)
+        cross_warnings = _check_cross_batch_similarity(results)
+        warnings.extend(cross_warnings)
 
-    # 批次深度衰减检测 (L4)
-    depth_warnings = _check_batch_depth_decay(results)
-    warnings.extend(depth_warnings)
+        # 批次深度衰减检测 (L4)
+        depth_warnings = _check_batch_depth_decay(results)
+        warnings.extend(depth_warnings)
 
     # 组织覆盖率检测 (§1.8)
     kb_profile_path = getattr(args, 'kb_profile', None)

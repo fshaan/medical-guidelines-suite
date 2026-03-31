@@ -4,7 +4,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-from batch_pipeline import ProfileConfig, PROFILE_FULL, PROFILE_SLIM, get_profile, generate_grep_commands, filter_orgs_by_disease, generate_batch_prompt, _is_flat_format, _aggregate_flat_results, _generate_consensus
+import json
+import argparse
+from batch_pipeline import ProfileConfig, PROFILE_FULL, PROFILE_SLIM, get_profile, generate_grep_commands, filter_orgs_by_disease, generate_batch_prompt, _is_flat_format, _aggregate_flat_results, _generate_consensus, cmd_validate
 
 
 class TestProfileConfig:
@@ -239,3 +241,63 @@ class TestGenerateConsensus:
         consensus, diffs = _generate_consensus(patient)
         assert consensus == []
         assert diffs == []
+
+
+class TestValidateSlim:
+    def _make_results_json(self, tmp_path):
+        data = {
+            "results": [{
+                "patient_id": "P1",
+                "diagnosis_summary": "胃癌",
+                "disease_type": "胃癌",
+                "clinical_questions": [{
+                    "guideline_results": [{
+                        "guideline": "NCCN",
+                        "recommendation": "这是一段至少二十个字的推荐文本内容用于测试",
+                    }],
+                    "consensus": [],
+                    "differences": [],
+                }],
+            }]
+        }
+        p = tmp_path / "results.json"
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        return str(p)
+
+    def test_slim_validate_missing_evidence_is_not_error(self, tmp_path):
+        """In slim mode, missing evidence_level should not cause exit(1)."""
+        results_path = self._make_results_json(tmp_path)
+        args = argparse.Namespace(
+            input=results_path, patients=None, kb_profile=None, profile="slim",
+        )
+        with pytest.raises(SystemExit) as exc:
+            cmd_validate(args)
+        assert exc.value.code == 0
+
+    def test_slim_validate_short_rec_passes_at_20(self, tmp_path):
+        """Slim mode allows rec >= 20 chars."""
+        data = {
+            "results": [{
+                "patient_id": "P1",
+                "diagnosis_summary": "胃癌",
+                "disease_type": "胃癌",
+                "clinical_questions": [{
+                    "guideline_results": [{
+                        "guideline": "NCCN",
+                        "recommendation": "这是二十字的推荐文本至少够了吧应该",
+                        "evidence_level": "1",
+                        "source_file": "f.txt",
+                    }],
+                    "consensus": ["c"],
+                    "differences": ["d"],
+                }],
+            }]
+        }
+        p = tmp_path / "results2.json"
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        args = argparse.Namespace(
+            input=str(p), patients=None, kb_profile=None, profile="slim",
+        )
+        with pytest.raises(SystemExit) as exc:
+            cmd_validate(args)
+        assert exc.value.code == 0
