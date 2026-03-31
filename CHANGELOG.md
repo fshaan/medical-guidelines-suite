@@ -5,7 +5,7 @@ All notable changes to the Medical Guidelines Suite will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v2.4.0 (2026-03-31)
+## v2.4.0 (2026-04-01)
 
 ### Added
 - `--profile slim` mode for small model (27B) compatibility
@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Dynamic org filtering by disease type
   - Auto-generated consensus/differences in merge stage
   - Relaxed validation (skip anti-laziness checks, lower thresholds)
+
+### Fixed
+- slim prompt 未写入磁盘 — `cmd_orchestrate` 写 prompt 文件时遗漏 `config=config` 参数
+- `_auto_split_batch` 不透传 config — slim 模式下 token 估算使用错误模板
+- `verify-batch` 的 V1/V2 检查对 slim 永远失败 — slim 不要求 execution_log，现已跳过
+- `_extract_patient_list` 重复调用 — `cmd_verify_batch` 中消除冗余调用
+- `_aggregate_flat_results` KeyError — `patient_id` 缺失时使用 `.get()` 防护
 
 ## [2.3.1] - 2026-03-27
 
