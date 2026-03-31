@@ -1,6 +1,6 @@
 ---
 name: medical-guidelines-suite
-version: 2.3.1
+version: 2.4.0
 description: |
   Medical Clinical Guidelines Knowledge Suite - Build, Query & Batch Process.
 

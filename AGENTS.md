@@ -110,7 +110,7 @@ medical-guidelines-suite/
 ├── scripts/batch_pipeline.py   # 8 个子命令: parse/split/orchestrate/merge/validate/verify-batch/generate
 ├── references/                 # 文件处理指南 + 输入格式规范
 ├── templates/                  # 索引模板 + PPTX 模板
-├── tests/                      # pytest 测试 (80 tests)
+├── tests/                      # pytest 测试 (107 tests)
 ├── Input/                      # 用户输入文件
 └── Output/                     # 生成输出（自动创建）
 ```
