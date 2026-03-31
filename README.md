@@ -78,6 +78,22 @@ Or simply ask Claude: "对 patients.xlsx 中的患者，批量检索指南推荐
 
 The `orchestrate` command replaces manual splitting — it automatically scans the knowledge base, extracts 9 clinical dimensions from each patient, and generates self-contained batch prompts with pre-built grep commands. Supports checkpoint recovery for interrupted processing.
 
+### Small Model Mode (--profile slim)
+
+For local models (Qwen 27B etc.) that struggle with complex prompts:
+
+```bash
+python scripts/batch_pipeline.py orchestrate \
+  --patients Output/patients.json \
+  --output-dir Output/batches \
+  --batch-size 5 \
+  --profile slim
+
+python scripts/batch_pipeline.py verify-batch --input-dir Output/batches/ --profile slim
+python scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
+python scripts/batch_pipeline.py validate --input Output/rag_results.json --profile slim
+```
+
 ## Output Deliverables
 
 | File | Description |

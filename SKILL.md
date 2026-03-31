@@ -1235,8 +1235,13 @@ Read `Output/patients.json` to confirm patient count N.
 ```bash
 python scripts/batch_pipeline.py orchestrate \
   --patients Output/patients.json --kb-root $KB_ROOT \
-  --output-dir Output/batches --batch-size 5
+  --output-dir Output/batches --batch-size 5 \
+  --profile {full,slim}
 ```
+
+**Parameters**:
+- `--profile full` (default): Full retrieval mode with ~36 grep commands per patient, 5-layer JSON output
+- `--profile slim`: Small model mode (~12 commands per patient, flattened 2-layer JSON) for 27B-class models that struggle with complex prompts
 
 读取生成的 `Output/batches/orchestration_plan.json`，报告给用户：
 - 批次数量、待处理数、已完成数（checkpoint）
