@@ -32,9 +32,11 @@ features["diagnosis_keywords"].extend([p["primary_site"], "gastric", "胃癌"])
 ```
 
 **修复**:
-1. 取 `p["primary_site"]` 的值
-2. 在 `_DISEASE_KEYWORD_MAP`（L444）中查找匹配：遍历 map 的 key，若 `primary_site` 包含该 key，则将对应的中英文关键词列表加入 `diagnosis_keywords`
-3. 若无匹配，仅加入 `primary_site` 本身
+1. 先将 `p["primary_site"]` 原值加入 `diagnosis_keywords`（保留原始值，如 "Gastric Signet Ring Cell Carcinoma"）
+2. 调用已有的 `_extract_disease_keywords(p["primary_site"])` 获取映射后的中英文关键词列表，追加到 `diagnosis_keywords`
+3. 删除硬编码的 `"gastric"/"胃癌"`
+
+> **审阅建议采纳**: 复用已有的 `_extract_disease_keywords()`（L455），不重新实现映射逻辑。同时保留 `primary_site` 原值确保特殊病理描述不丢失。
 
 **`_extract_from_narrative()` (L722)**: 无需修改。`site_patterns` 硬编码列表用于从叙述文本中扫描识别癌种，仅在文本中匹配时才 append，逻辑正确。
 
@@ -42,6 +44,7 @@ features["diagnosis_keywords"].extend([p["primary_site"], "gastric", "胃癌"])
 - 肺癌患者不应出现 "gastric" 关键词
 - 胃癌患者应正确映射出 "gastric"/"stomach"/"胃"
 - `_DISEASE_KEYWORD_MAP` 中未覆盖的癌种，仅注入 `primary_site` 原值
+- 特殊病理描述（如 "Gastric Signet Ring Cell Carcinoma"）作为完整关键词保留
 
 ---
 
@@ -75,10 +78,13 @@ python scripts/batch_pipeline.py merge \
   --patients Output/patients.json
 ```
 
+> **审阅建议采纳**: 当 `--patients` 提供时，若 batch 结果中某个 `patient_id` 在 patients.json 中找不到，打印警告 `⚠ 患者 {pid} 未在 patients.json 中找到，跳过元数据回注`。
+
 **测试**:
 - merge 带 `--patients` 时，输出结果包含 `patient_name`/`primary_site` 等
 - merge 不带 `--patients` 时，行为与现有一致
 - LLM 已输出的字段不被覆盖
+- batch 结果中存在 patients.json 中没有的 patient_id 时，打印警告但不中断
 
 ---
 
@@ -93,7 +99,7 @@ python scripts/batch_pipeline.py merge \
    - 以 `(guideline, recommendation)` 元组为去重 key
    - 保留首次出现的条目，丢弃后续重复
    - 去重后若有删除，打印警告：`⚠ 患者 {pid}: 去除 {n} 条重复推荐`
-2. 对 `consensus` 和 `differences` 列表做字符串去重（保序）
+2. 对 `consensus` 和 `differences` 列表用 `list(dict.fromkeys(list))` 做字符串去重（保序高效）
 3. 调用时机：在 `_extract_patient_list()` 返回前，对每个患者执行
 
 **设计考量**:
