@@ -1296,7 +1296,7 @@ When processing batches, the following rules are **mandatory** to prevent qualit
 
 ```bash
 # Merge all batch results into unified rag_results.json
-python scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
+python scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json --patients Output/patients.json
 
 # Validate completeness and quality
 python scripts/batch_pipeline.py validate --input Output/rag_results.json --patients Output/patients.json
