@@ -69,3 +69,63 @@ def test_nested_structure_passthrough():
     assert p["clinical_questions"] is original_cq
     # root-level guideline_results 不被 pop（因为 clinical_questions 已存在）
     assert "guideline_results" in p
+
+
+def test_dedup_removes_repeated_guideline_results():
+    """重复的 guideline_results 只保留第一条"""
+    rec = {"guideline": "NCCN", "recommendation": "推荐曲妥珠单抗联合化疗"}
+    data = {"batch_id": "batch_001", "results": [{
+        "patient_id": "P001",
+        "guideline_results": [
+            {**rec, "source_lines": "10-20"},
+            {**rec, "source_lines": "10-20"},
+            {**rec, "source_lines": "30-40"},  # same rec, different lines
+            {"guideline": "ESMO", "recommendation": "推荐曲妥珠单抗联合化疗"},  # different guideline
+            {**rec, "source_lines": "10-20"},
+            {**rec, "source_lines": "10-20"},
+        ],
+        "consensus": ["共识A", "共识A", "共识B", "共识A"],
+        "differences": ["差异X", "差异X"],
+    }]}
+    patients = _extract_patient_list(data)
+    p = patients[0]
+    cq = p["clinical_questions"][0]
+    # NCCN rec kept once + ESMO rec kept once = 2
+    assert len(cq["guideline_results"]) == 2
+    assert cq["guideline_results"][0]["guideline"] == "NCCN"
+    assert cq["guideline_results"][1]["guideline"] == "ESMO"
+    # consensus deduped preserving order
+    assert cq["consensus"] == ["共识A", "共识B"]
+    # differences deduped
+    assert cq["differences"] == ["差异X"]
+
+
+def test_dedup_no_duplicates_unchanged():
+    """无重复时 guideline_results 不变"""
+    data = {"batch_id": "batch_001", "results": [{
+        "patient_id": "P001",
+        "guideline_results": [
+            {"guideline": "NCCN", "recommendation": "rec1"},
+            {"guideline": "ESMO", "recommendation": "rec2"},
+        ],
+        "consensus": ["共识"],
+        "differences": [],
+    }]}
+    patients = _extract_patient_list(data)
+    cq = patients[0]["clinical_questions"][0]
+    assert len(cq["guideline_results"]) == 2
+
+
+def test_dedup_different_guidelines_same_rec_kept():
+    """不同指南的相同推荐文本不被误去重"""
+    data = {"batch_id": "batch_001", "results": [{
+        "patient_id": "P001",
+        "guideline_results": [
+            {"guideline": "NCCN", "recommendation": "一线推荐曲妥珠单抗"},
+            {"guideline": "ESMO", "recommendation": "一线推荐曲妥珠单抗"},
+            {"guideline": "CSCO", "recommendation": "一线推荐曲妥珠单抗"},
+        ],
+    }]}
+    patients = _extract_patient_list(data)
+    cq = patients[0]["clinical_questions"][0]
+    assert len(cq["guideline_results"]) == 3

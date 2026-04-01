@@ -1200,6 +1200,36 @@ def _generate_consensus(patient: dict) -> tuple[list[str], list[str]]:
     return consensus, diffs
 
 
+def _deduplicate_guideline_results(patient: dict) -> dict:
+    """去除小模型重复输出的 guideline_results / consensus / differences。"""
+    pid = patient.get("patient_id", "?")
+    total_removed = 0
+
+    for cq in patient.get("clinical_questions", []):
+        grs = cq.get("guideline_results", [])
+        if grs:
+            seen = set()
+            unique = []
+            for gr in grs:
+                key = (gr.get("guideline", ""), gr.get("recommendation", ""))
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(gr)
+            removed = len(grs) - len(unique)
+            if removed:
+                total_removed += removed
+                cq["guideline_results"] = unique
+
+        if cq.get("consensus"):
+            cq["consensus"] = list(dict.fromkeys(cq["consensus"]))
+        if cq.get("differences"):
+            cq["differences"] = list(dict.fromkeys(cq["differences"]))
+
+    if total_removed:
+        print(f"  ⚠ 患者 {pid}: 去除 {total_removed} 条重复推荐", file=sys.stderr)
+    return patient
+
+
 def _extract_patient_list(batch_data: dict) -> list[dict]:
     """从 batch JSON 提取患者列表。
 
@@ -1227,7 +1257,7 @@ def _extract_patient_list(batch_data: dict) -> list[dict]:
                 "consensus": consensus,
                 "differences": diffs,
             }]
-        return patients
+        return [_deduplicate_guideline_results(p) for p in patients]
 
     for p in patients:
         if not p.get("clinical_questions") and p.get("guideline_results"):
@@ -1236,7 +1266,7 @@ def _extract_patient_list(batch_data: dict) -> list[dict]:
                 "consensus": p.pop("consensus", []),
                 "differences": p.pop("differences", []),
             }]
-    return patients
+    return [_deduplicate_guideline_results(p) for p in patients]
 
 
 # ─── merge 子命令 ─────────────────────────────────────────────────────────────
