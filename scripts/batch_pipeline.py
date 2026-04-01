@@ -1326,7 +1326,9 @@ def cmd_merge(args):
                     for field in ("patient_name", "primary_site", "disease_type",
                                   "diagnosis_summary"):
                         if not result.get(field):
-                            result[field] = source.get(field, "")
+                            val = source.get(field)
+                            if val:
+                                result[field] = val
                 elif pid:
                     print(f"  ⚠ 患者 {pid} 未在 patients.json 中找到，跳过元数据回注",
                           file=sys.stderr)
