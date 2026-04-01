@@ -643,7 +643,8 @@ def extract_patient_features(patient: dict) -> dict:
 def _extract_from_structured(p: dict, features: dict):
     """从结构化字段提取关键词"""
     if p.get("primary_site"):
-        features["diagnosis_keywords"].extend([p["primary_site"], "gastric", "胃癌"])
+        features["diagnosis_keywords"].append(p["primary_site"])
+        features["diagnosis_keywords"].extend(_extract_disease_keywords(p["primary_site"]))
     if p.get("pathology"):
         features["diagnosis_keywords"].append(p["pathology"])
 
