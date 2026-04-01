@@ -1275,6 +1275,21 @@ def _extract_patient_list(batch_data: dict) -> list[dict]:
 def cmd_merge(args):
     """merge 子命令入口 — 合并多个 rag_batch_*.json 为 rag_results.json"""
     input_dir = Path(args.input_dir).resolve()
+
+    # 加载患者元数据 lookup（可选）
+    patient_lookup = {}
+    if getattr(args, "patients", None):
+        patients_path = Path(args.patients).resolve()
+        if patients_path.exists():
+            pdata = json.loads(patients_path.read_text(encoding="utf-8"))
+            for p in pdata.get("patients", []):
+                pid = p.get("patient_id")
+                if pid:
+                    patient_lookup[pid] = p
+            print(f"已加载患者元数据: {len(patient_lookup)} 位患者")
+        else:
+            print(f"  ⚠ patients.json 不存在: {patients_path}", file=sys.stderr)
+
     batch_files = sorted(input_dir.glob("rag_batch_*.json"))
 
     if not batch_files:
@@ -1303,6 +1318,18 @@ def cmd_merge(args):
                 result.pop(key, None)
 
             all_results.append(result)
+
+            # 回注患者元数据（仅填充缺失字段）
+            if patient_lookup:
+                source = patient_lookup.get(pid)
+                if source:
+                    for field in ("patient_name", "primary_site", "disease_type",
+                                  "diagnosis_summary"):
+                        if not result.get(field):
+                            result[field] = source.get(field, "")
+                elif pid:
+                    print(f"  ⚠ 患者 {pid} 未在 patients.json 中找到，跳过元数据回注",
+                          file=sys.stderr)
 
     merged = {
         "generated_at": str(date.today()),
@@ -2358,6 +2385,8 @@ def main():
     p_merge = sub.add_parser("merge", help="合并批次结果为 rag_results.json")
     p_merge.add_argument("--input-dir", required=True, help="批次结果所在目录")
     p_merge.add_argument("--output", default="Output/rag_results.json", help="合并输出路径")
+    p_merge.add_argument("--patients", default=None,
+                         help="patients.json 路径（可选，用于回注患者元数据）")
 
     # validate
     p_validate = sub.add_parser("validate", help="验证 RAG 结果质量与完整性")
