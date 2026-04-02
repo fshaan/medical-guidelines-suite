@@ -126,7 +126,7 @@ medical-guidelines-suite/
 │   ├── extract_docx.py         # DOCX text extraction
 │   ├── extract_all.py          # Batch extraction
 │   └── batch_pipeline.py       # Batch patient pipeline (8 subcommands incl. verify-batch)
-├── tests/                      # pytest test suite (107 tests)
+├── tests/                      # pytest test suite (118 tests)
 ├── docs/
 │   ├── v2.3-anti-laziness-spec.md  # v2.3 execution evidence spec
 │   ├── v2.2-fix-plan.md       # v2.2 design spec
