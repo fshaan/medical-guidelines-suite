@@ -2011,6 +2011,138 @@ def _prepare_patient_rows(data: dict) -> list[dict]:
     return rows
 
 
+def _slugify(text: str) -> str:
+    """生成 Markdown 锚点 slug（中文保留，空格转 -，去掉特殊字符）"""
+    slug = text.strip().lower()
+    slug = re.sub(r"[^\w\u4e00-\u9fff\s-]", "", slug)
+    slug = re.sub(r"[\s]+", "-", slug)
+    return slug
+
+
+def generate_md(data: dict, output_path: Path):
+    """生成单一 Markdown 报告文件。"""
+    rows = _prepare_patient_rows(data)
+    try:
+        locale.setlocale(locale.LC_COLLATE, "zh_CN.UTF-8")
+    except locale.Error:
+        try:
+            locale.setlocale(locale.LC_COLLATE, "")
+        except locale.Error:
+            pass
+    rows.sort(key=lambda r: locale.strxfrm(r["patient_name"]))
+    generated_at = data.get("generated_at", str(date.today()))
+    patient_count = data.get("patient_count", len(rows))
+
+    lines = []
+    lines.append("# 批量指南推荐报告")
+    lines.append("")
+    lines.append(f"> 生成日期: {md_escape(generated_at)} | 患者数: {patient_count}")
+    lines.append("")
+    lines.append("## 目录")
+
+    for row in rows:
+        pid = row["patient_id"]
+        name = md_escape(row["patient_name"])
+        slug = _slugify(f"{pid} {row['patient_name']}")
+        lines.append(f"- [{name}](#{slug})")
+
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    all_evidence_entries = []
+
+    for row in rows:
+        pid = row["patient_id"]
+        name = md_escape(row["patient_name"])
+        lines.append(f"## {pid} {name}")
+        lines.append("")
+        lines.append("### 基本信息")
+        lines.append("")
+        info_fields = [
+            ("患者ID", pid),
+            ("肿瘤部位", md_escape(row["primary_site"])),
+            ("病种诊断", md_escape(row["disease_type"])),
+            ("诊断摘要", md_escape(row["diagnosis_summary"])),
+        ]
+        for label, value in info_fields:
+            lines.append(f"- **{label}**: {value or '—'}")
+        lines.append("")
+
+        for qi, q in enumerate(row["questions"], 1):
+            question_text = md_escape(q["question"])
+            lines.append(f"### 临床问题 {qi}: {question_text}")
+            lines.append("")
+
+            for g in q["guidelines"]:
+                gname = md_escape(g["name"])
+                gver = md_escape(g["version"])
+                lines.append(f"#### {gname} (v{gver})")
+                lines.append("")
+                source = g["source_file"]
+                slines = g["source_lines"]
+                source_display = (
+                    f"{md_escape(source)} L{slines}" if slines else md_escape(source)
+                )
+                lines.append(f"- **推荐意见**: {md_escape(g['recommendation'])}")
+                lines.append(f"- **证据等级**: {md_escape(g['evidence_level'])}")
+                lines.append(f"- **来源**: {source_display}")
+                lines.append("")
+
+                if g["evidence_level"]:
+                    all_evidence_entries.append((g["name"], g["evidence_level"]))
+
+            if any(g["evidence_level"] for g in q["guidelines"]):
+                lines.append("#### 证据等级对照")
+                lines.append("")
+                for g in q["guidelines"]:
+                    if g["evidence_level"]:
+                        lines.append(
+                            f"- **{md_escape(g['name'])}**: {md_escape(g['evidence_level'])}"
+                        )
+                lines.append("")
+
+            lines.append("#### 共识与差异")
+            lines.append("")
+            if q["consensus"]:
+                lines.append("**共识点:**")
+                for c in q["consensus"]:
+                    lines.append(f"- {md_escape(c)}")
+                lines.append("")
+            if q["differences"]:
+                lines.append("**主要差异:**")
+                for d in q["differences"]:
+                    lines.append(f"- {md_escape(d)}")
+                lines.append("")
+
+        lines.append("---")
+        lines.append("")
+
+    if all_evidence_entries:
+        lines.append("## 附录：证据等级参考")
+        lines.append("")
+        lines.append("以下汇总本报告中出现的所有证据等级体系及其含义。")
+        lines.append("")
+        seen = set()
+        for gname, level in all_evidence_entries:
+            key = (gname, level)
+            if key not in seen:
+                seen.add(key)
+                lines.append(f"- **{md_escape(gname)}**: {md_escape(level)}")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    lines.append(
+        "*本文档由医学指南RAG系统自动生成，仅供临床参考，不替代专业医学判断。*"
+    )
+    lines.append("")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"  ✓ Markdown 报告: {output_path}")
+
+
 def generate_xlsx(data: dict, output_path: Path):
     """生成批量推荐汇总表"""
     from openpyxl import Workbook
