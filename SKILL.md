@@ -1243,6 +1243,13 @@ python scripts/batch_pipeline.py orchestrate \
 - `--profile full` (default): Full retrieval mode with ~36 grep commands per patient, 5-layer JSON output
 - `--profile slim`: Small model mode (~12 commands per patient, flattened 2-layer JSON) for 27B-class models that struggle with complex prompts
 
+<IMPORTANT>
+`--profile slim` 是一个已实现的 CLI 参数，不是需要你定义或选择的概念。
+当用户说"slim 模式"、"小模型模式"、"用 27B 跑"时，直接在 orchestrate/verify-batch/validate 命令中添加 `--profile slim`。
+不要询问用户 slim 的含义，不要提供选项让用户选择 slim 的定义。
+slim 的所有行为已由 `batch_pipeline.py` 中的 `ProfileConfig` 控制，无需额外配置。
+</IMPORTANT>
+
 读取生成的 `Output/batches/orchestration_plan.json`，报告给用户：
 - 批次数量、待处理数、已完成数（checkpoint）
 - 覆盖的指南组织
