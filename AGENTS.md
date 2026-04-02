@@ -75,7 +75,7 @@ python3 scripts/batch_pipeline.py orchestrate \
 # 4. 合并 + 验证 + 生成
 python3 scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
 python3 scripts/batch_pipeline.py validate --input Output/rag_results.json --patients Output/patients.json
-python3 scripts/batch_pipeline.py generate --input Output/rag_results.json --format all
+python3 scripts/batch_pipeline.py generate --input Output/rag_results.json --format md
 ```
 
 ### 批次 prompt 执行规则
