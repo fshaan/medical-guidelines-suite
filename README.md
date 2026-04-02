@@ -94,6 +94,15 @@ python scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Outp
 python scripts/batch_pipeline.py validate --input Output/rag_results.json --profile slim
 ```
 
+**Agent 自然语言调用：** 在 Claude Code / OpenClaw 等 agent 界面中，可以用自然语言触发 slim 模式：
+
+| 说法 | 效果 |
+|------|------|
+| "用 slim 模式批量检索" | `--profile slim` |
+| "小模型模式处理患者" | `--profile slim` |
+| "用 27B 本地模型跑批量" | agent 推断使用 slim |
+| 不指定 | 默认 `--profile full` |
+
 ## Output Deliverables
 
 | File | Description |
