@@ -21,7 +21,7 @@ clawdis:
   requires:
     bins: [grep, python3]
     optional_bins: [pdftotext]
-    pip: [openpyxl, python-docx, python-pptx]
+    pip: [openpyxl]
   triggers:
     - 指南推荐
     - 治疗方案
@@ -1147,33 +1147,15 @@ Write results to `Output/rag_results.json`:
 ## 6. Output Generation
 
 ```bash
-python scripts/batch_pipeline.py generate --input Output/rag_results.json --format all
+python scripts/batch_pipeline.py generate --input Output/rag_results.json --format md
 ```
 
-### Deliverable 1: 批量推荐汇总表.xlsx
+### 交付物: 批量指南推荐报告_YYYYMMDD.md
 
-Columns: 患者ID → 姓名 → 肿瘤部位 → 诊断摘要 → 临床问题 → **共识点** → **差异点** → {各指南推荐} → 备注
-
-### Deliverable 2: 推荐意见书.docx (per patient)
-
-Landscape orientation. Contains: patient info table, clinical questions, guideline comparison table, consensus/differences analysis, generation date, disclaimer.
-
-Title format: `{姓名}（{ID}）临床指南推荐意见书`
-
-### Deliverable 3: 批量推荐幻灯片.pptx
-
-Uses `templates/report_template.pptx` with branded layouts:
-
-| Slide Type | Template Layout | Content |
-|-----------|----------------|---------|
-| Cover | Layout 0 (Title Slide) | Title + date + patient count |
-| Summary | Layout 1 (Custom) | Patient overview table (auto-paginated at 15 rows) |
-| Patient Info | Layout 2 (Title+Content) | Info table + clinical questions |
-| Comparison | Layout 3 (1_Title+Content) | Guideline recommendation table (4 cols) |
-| Consensus | Layout 4 (Comparison) | Left: consensus / Right: differences |
-| Disclaimer | Layout 0 (Title Slide) | Disclaimer text |
-
-**Page formula**: 1(cover) + ceil(N/15)(summary) + 3×N(patients) + 1(disclaimer)
+单文件 Markdown 报告，包含所有患者的推荐对比。结构：
+- 目录（锚点导航）
+- 每位患者：基本信息表 → 临床问题 → 各指南卡片式推荐（含证据等级）→ 共识与差异
+- 附录：证据等级参考表
 
 ---
 
@@ -1314,7 +1296,7 @@ If validate reports errors (missing patients, empty fields), inform the user and
 ### Step 5: Generate Outputs
 
 ```bash
-python scripts/batch_pipeline.py generate --input Output/rag_results.json --format all
+python scripts/batch_pipeline.py generate --input Output/rag_results.json --format md
 ```
 
 ### Step 6: Verify and Report

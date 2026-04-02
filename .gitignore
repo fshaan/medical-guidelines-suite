@@ -5,3 +5,5 @@ __pycache__/
 Output/*
 !Output/.gitkeep
 Input/*.json
+.gspowers/
+.omc/
