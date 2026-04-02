@@ -1971,6 +1971,46 @@ def md_escape(text: str) -> str:
     return text
 
 
+def _prepare_patient_rows(data: dict) -> list[dict]:
+    """从 rag_results 中提取患者行数据，返回纯 POD 结构。"""
+    rows = []
+    for result in data.get("results", []):
+        questions = []
+        for q in result.get("clinical_questions", []):
+            guidelines = []
+            for gr in q.get("guideline_results", []):
+                guidelines.append(
+                    {
+                        "name": gr.get("guideline", ""),
+                        "version": gr.get("version", ""),
+                        "recommendation": gr.get("recommendation", ""),
+                        "evidence_level": gr.get("evidence_level", ""),
+                        "source_file": gr.get("source_file", ""),
+                        "source_lines": gr.get("source_lines", ""),
+                    }
+                )
+            questions.append(
+                {
+                    "question": q.get("question", ""),
+                    "guidelines": guidelines,
+                    "evidence_table": [],
+                    "consensus": q.get("consensus", []),
+                    "differences": q.get("differences", []),
+                }
+            )
+        rows.append(
+            {
+                "patient_id": result.get("patient_id", ""),
+                "patient_name": result.get("patient_name", ""),
+                "primary_site": result.get("primary_site", ""),
+                "disease_type": result.get("disease_type", ""),
+                "diagnosis_summary": result.get("diagnosis_summary", ""),
+                "questions": questions,
+            }
+        )
+    return rows
+
+
 def generate_xlsx(data: dict, output_path: Path):
     """生成批量推荐汇总表"""
     from openpyxl import Workbook
