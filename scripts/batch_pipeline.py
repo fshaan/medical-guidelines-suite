@@ -418,7 +418,7 @@ def _parse_clinical_question_map(text: str) -> dict:
 
 
 # grep 特殊字符转义
-_GREP_SPECIAL = re.compile(r'([\[\]().*+?{}\\^$|])')
+_GREP_SPECIAL = re.compile(r'([\[\]().*+?{}\\^$|"])')
 
 
 def escape_grep_keyword(keyword: str) -> list[str]:
@@ -792,7 +792,6 @@ def _generate_slim_prompt(
     # 步骤 1: grep 命令 + 微检查点
     lines.append("## 步骤 1：执行 grep 命令\n")
 
-    total_cmds = 0
     for pi, patient in enumerate(batch, 1):
         pid = patient.get("patient_id", "?")
         pname = patient.get("patient_name", "?")
@@ -803,7 +802,6 @@ def _generate_slim_prompt(
         for ci, gc in enumerate(grep_cmds, 1):
             cmd_id = f"CMD-P{pi:03d}-{gc['org']}-{ci:02d}"
             lines.append(f"{cmd_id}: {gc['command']}")
-            total_cmds += 1
 
         if config.micro_checkpoints and grep_cmds:
             lines.append(f"\n【自检 P{pi:03d}】确认执行了全部 {len(grep_cmds)} 条命令。\n")
