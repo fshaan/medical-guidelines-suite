@@ -107,9 +107,7 @@ python scripts/batch_pipeline.py validate --input Output/rag_results.json --prof
 
 | File | Description |
 |------|-------------|
-| `批量推荐汇总表.xlsx` | Summary table with all patients and guideline recommendations |
-| `reports/{ID}_{name}_推荐意见书.docx` | Per-patient recommendation report (landscape) |
-| `批量推荐幻灯片.pptx` | Presentation slides using branded template |
+| `批量指南推荐报告_YYYYMMDD.md` | Single Markdown report with all patients, TOC navigation, guideline cards, evidence appendix |
 
 ## File Structure
 
@@ -128,14 +126,13 @@ medical-guidelines-suite/
 │   └── input_format.md         # Batch input Excel spec
 ├── templates/
 │   ├── data_structure_root.md  # Root index template
-│   ├── data_structure_org.md   # Organization index template
-│   └── report_template.pptx   # PowerPoint slide template
+│   └── data_structure_org.md   # Organization index template
 ├── scripts/
 │   ├── extract_pdf.py          # PDF text extraction
 │   ├── extract_docx.py         # DOCX text extraction
 │   ├── extract_all.py          # Batch extraction
 │   └── batch_pipeline.py       # Batch patient pipeline (8 subcommands incl. verify-batch)
-├── tests/                      # pytest test suite (118 tests)
+├── tests/                      # pytest test suite (148 tests)
 ├── docs/
 │   ├── v2.3-anti-laziness-spec.md  # v2.3 execution evidence spec
 │   ├── v2.2-fix-plan.md       # v2.2 design spec
@@ -148,14 +145,12 @@ medical-guidelines-suite/
 ## Requirements
 
 - Python 3.9+
-- `openpyxl` — Excel read/write
-- `python-docx` — Word document generation
-- `python-pptx` — PowerPoint generation
+- `openpyxl` — Excel input parsing
 - `pdftotext` (poppler) — PDF text extraction (optional, for build phase)
 
 ## Acknowledgments
 
-This project was inspired by [ConardLi/rag-skill](https://github.com/ConardLi/rag-skill), which demonstrated the hierarchical index + progressive retrieval pattern for local knowledge bases using Claude Code Skills. We adopted and extended its core architectural ideas — `data_structure.md` layered indexing, grep-based search, and the "learn before process" constraint — into the medical guidelines domain, adding cross-guideline comparison, batch patient processing, and multi-format report generation.
+This project was inspired by [ConardLi/rag-skill](https://github.com/ConardLi/rag-skill), which demonstrated the hierarchical index + progressive retrieval pattern for local knowledge bases using Claude Code Skills. We adopted and extended its core architectural ideas — `data_structure.md` layered indexing, grep-based search, and the "learn before process" constraint — into the medical guidelines domain, adding cross-guideline comparison, batch patient processing, and Markdown report generation.
 
 ## License
 
