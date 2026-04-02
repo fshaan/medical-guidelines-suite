@@ -1,4 +1,4 @@
-# Medical Guidelines Suite v2.3.0
+# Medical Guidelines Suite v2.4.0
 
 Clinical guidelines knowledge base builder, retrieval engine, and batch patient report generator.
 
@@ -78,6 +78,22 @@ Or simply ask Claude: "对 patients.xlsx 中的患者，批量检索指南推荐
 
 The `orchestrate` command replaces manual splitting — it automatically scans the knowledge base, extracts 9 clinical dimensions from each patient, and generates self-contained batch prompts with pre-built grep commands. Supports checkpoint recovery for interrupted processing.
 
+### Small Model Mode (--profile slim)
+
+For local models (Qwen 27B etc.) that struggle with complex prompts:
+
+```bash
+python scripts/batch_pipeline.py orchestrate \
+  --patients Output/patients.json \
+  --output-dir Output/batches \
+  --batch-size 5 \
+  --profile slim
+
+python scripts/batch_pipeline.py verify-batch --input-dir Output/batches/ --profile slim
+python scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
+python scripts/batch_pipeline.py validate --input Output/rag_results.json --profile slim
+```
+
 ## Output Deliverables
 
 | File | Description |
@@ -110,7 +126,7 @@ medical-guidelines-suite/
 │   ├── extract_docx.py         # DOCX text extraction
 │   ├── extract_all.py          # Batch extraction
 │   └── batch_pipeline.py       # Batch patient pipeline (8 subcommands incl. verify-batch)
-├── tests/                      # pytest test suite (70 tests)
+├── tests/                      # pytest test suite (118 tests)
 ├── docs/
 │   ├── v2.3-anti-laziness-spec.md  # v2.3 execution evidence spec
 │   ├── v2.2-fix-plan.md       # v2.2 design spec

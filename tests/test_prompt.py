@@ -166,3 +166,41 @@ def test_prompt_contains_execution_log_schema():
     assert "match_count" in prompt
     assert "first_match_snippet" in prompt
     assert "execution_summary" in prompt
+
+
+def test_prompt_contains_full_json_template():
+    """输出要求包含完整 JSON 模板，顶层 key 为 'results'"""
+    batch = [{
+        "patient_id": "P001", "patient_name": "测试",
+        "features": {"all_keywords": ["x"], "confidence": "high", "diagnosis_keywords": ["x"]},
+        "grep_commands": [{"org": "NCCN", "dimension": "d", "command": "grep x"}],
+    }]
+    prompt = generate_batch_prompt(
+        batch=batch,
+        kb_profile={"root_index_content": "# KB", "orgs": ["NCCN"]},
+        kb_root="/kb", batch_idx=1, total_batches=1,
+    )
+    assert '"results"' in prompt
+    assert "完整 JSON 模板" in prompt
+    assert '"batch_id"' in prompt
+    assert '"consensus"' in prompt
+    assert '"differences"' in prompt
+    # 确认明确要求不要用 "patients"
+    assert '"patients"' in prompt  # 出现在「不是 patients」的说明中
+
+
+def test_prompt_contains_anti_subagent():
+    """prompt 包含 anti-subagent 指令"""
+    batch = [{
+        "patient_id": "P001", "patient_name": "测试",
+        "features": {"all_keywords": ["x"], "confidence": "high", "diagnosis_keywords": ["x"]},
+        "grep_commands": [{"org": "NCCN", "dimension": "d", "command": "grep x"}],
+    }]
+    prompt = generate_batch_prompt(
+        batch=batch,
+        kb_profile={"root_index_content": "# KB", "orgs": ["NCCN"]},
+        kb_root="/kb", batch_idx=1, total_batches=1,
+    )
+    assert "Agent tool" in prompt
+    assert "子代理" in prompt or "并行" in prompt
+    assert "逐条执行" in prompt

@@ -65,3 +65,87 @@ def test_feature_dimensions():
         "all_keywords", "confidence",
     }
     assert expected_keys.issubset(set(features.keys()))
+
+
+def test_lung_patient_no_gastric_keywords():
+    """肺癌患者不应出现 gastric 关键词"""
+    p = {
+        "patient_id": "L001", "patient_name": "肺癌患者",
+        "primary_site": "右肺上叶",
+        "pathology": "腺癌",
+        **{k: None for k in [
+            "gender", "age", "siewert_type", "patient_type", "prior_treatment",
+            "biopsy_molecular", "gross_molecular", "abnormal_markers", "marker_change",
+            "staging_prefix", "t_stage", "t4b_invasion", "n_stage", "m_stage",
+            "m_sites", "staging_notes", "symptom_change", "response",
+            "tumor_emergency", "comorbidities", "clinical_narrative",
+        ]},
+    }
+    from scripts.batch_pipeline import extract_patient_features
+    features = extract_patient_features(p)
+    all_kw = " ".join(features["diagnosis_keywords"]).lower()
+    assert "gastric" not in all_kw
+    assert "胃癌" not in all_kw
+    # 应包含肺相关关键词
+    assert any(k in all_kw for k in ["lung", "pulmonary", "肺"])
+
+
+def test_gastric_patient_has_correct_keywords():
+    """胃癌患者应映射出正确的中英文关键词"""
+    p = {
+        "patient_id": "G001", "patient_name": "胃癌患者",
+        "primary_site": "胃体",
+        "pathology": "腺癌",
+        **{k: None for k in [
+            "gender", "age", "siewert_type", "patient_type", "prior_treatment",
+            "biopsy_molecular", "gross_molecular", "abnormal_markers", "marker_change",
+            "staging_prefix", "t_stage", "t4b_invasion", "n_stage", "m_stage",
+            "m_sites", "staging_notes", "symptom_change", "response",
+            "tumor_emergency", "comorbidities", "clinical_narrative",
+        ]},
+    }
+    from scripts.batch_pipeline import extract_patient_features
+    features = extract_patient_features(p)
+    all_kw = " ".join(features["diagnosis_keywords"]).lower()
+    assert "gastric" in all_kw
+    assert "stomach" in all_kw
+
+
+def test_unmapped_cancer_retains_primary_site():
+    """未在映射表中的癌种只保留 primary_site 原值"""
+    p = {
+        "patient_id": "U001", "patient_name": "罕见癌种",
+        "primary_site": "腮腺",
+        "pathology": "腺样囊性癌",
+        **{k: None for k in [
+            "gender", "age", "siewert_type", "patient_type", "prior_treatment",
+            "biopsy_molecular", "gross_molecular", "abnormal_markers", "marker_change",
+            "staging_prefix", "t_stage", "t4b_invasion", "n_stage", "m_stage",
+            "m_sites", "staging_notes", "symptom_change", "response",
+            "tumor_emergency", "comorbidities", "clinical_narrative",
+        ]},
+    }
+    from scripts.batch_pipeline import extract_patient_features
+    features = extract_patient_features(p)
+    assert "腮腺" in features["diagnosis_keywords"]
+    all_kw = " ".join(features["diagnosis_keywords"]).lower()
+    assert "gastric" not in all_kw
+
+
+def test_special_pathology_retained_as_keyword():
+    """特殊病理描述作为完整关键词保留"""
+    p = {
+        "patient_id": "S001", "patient_name": "特殊病理",
+        "primary_site": "Gastric Signet Ring Cell Carcinoma",
+        **{k: None for k in [
+            "gender", "age", "pathology", "siewert_type", "patient_type",
+            "prior_treatment", "biopsy_molecular", "gross_molecular",
+            "abnormal_markers", "marker_change", "staging_prefix", "t_stage",
+            "t4b_invasion", "n_stage", "m_stage", "m_sites", "staging_notes",
+            "symptom_change", "response", "tumor_emergency", "comorbidities",
+            "clinical_narrative",
+        ]},
+    }
+    from scripts.batch_pipeline import extract_patient_features
+    features = extract_patient_features(p)
+    assert "Gastric Signet Ring Cell Carcinoma" in features["diagnosis_keywords"]

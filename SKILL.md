@@ -1,6 +1,6 @@
 ---
 name: medical-guidelines-suite
-version: 2.1.0
+version: 2.4.0
 description: |
   Medical Clinical Guidelines Knowledge Suite - Build, Query & Batch Process.
 
@@ -1235,8 +1235,13 @@ Read `Output/patients.json` to confirm patient count N.
 ```bash
 python scripts/batch_pipeline.py orchestrate \
   --patients Output/patients.json --kb-root $KB_ROOT \
-  --output-dir Output/batches --batch-size 5
+  --output-dir Output/batches --batch-size 5 \
+  --profile {full,slim}
 ```
+
+**Parameters**:
+- `--profile full` (default): Full retrieval mode with ~36 grep commands per patient, 5-layer JSON output
+- `--profile slim`: Small model mode (~12 commands per patient, flattened 2-layer JSON) for 27B-class models that struggle with complex prompts
 
 读取生成的 `Output/batches/orchestration_plan.json`，报告给用户：
 - 批次数量、待处理数、已完成数（checkpoint）
@@ -1291,7 +1296,7 @@ When processing batches, the following rules are **mandatory** to prevent qualit
 
 ```bash
 # Merge all batch results into unified rag_results.json
-python scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
+python scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json --patients Output/patients.json
 
 # Validate completeness and quality
 python scripts/batch_pipeline.py validate --input Output/rag_results.json --patients Output/patients.json
@@ -1357,4 +1362,4 @@ Report on resume: "检测到已完成 X/M 批（Y 位患者），从第 Z 批继
 
 ---
 
-*Last Updated: 2026-03-25*
+*Last Updated: 2026-03-27*

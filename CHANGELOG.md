@@ -5,6 +5,37 @@ All notable changes to the Medical Guidelines Suite will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v2.4.0 (2026-04-01)
+
+### Added
+- `--profile slim` mode for small model (27B) compatibility
+  - Reduces grep commands from ~36 to ~12 per patient via dimension grouping
+  - Flattened 2-layer JSON output (vs 5-layer in full mode)
+  - Micro-checkpoints in prompts for better instruction following
+  - Dynamic org filtering by disease type
+  - Auto-generated consensus/differences in merge stage
+  - Relaxed validation (skip anti-laziness checks, lower thresholds)
+
+### Fixed
+- slim prompt 未写入磁盘 — `cmd_orchestrate` 写 prompt 文件时遗漏 `config=config` 参数
+- `_auto_split_batch` 不透传 config — slim 模式下 token 估算使用错误模板
+- `verify-batch` 的 V1/V2 检查对 slim 永远失败 — slim 不要求 execution_log，现已跳过
+- `_extract_patient_list` 重复调用 — `cmd_verify_batch` 中消除冗余调用
+- `_aggregate_flat_results` KeyError — `patient_id` 缺失时使用 `.get()` 防护
+
+## [2.3.1] - 2026-03-27
+
+### Fixed
+- **merge 输出 0 患者** — 修复 prompt 未指定完整 JSON 顶层结构导致 LLM 输出 `"patients"` 键而代码读 `"results"` 键的 schema drift 问题
+- **扁平→嵌套结构兼容** — 新增 `_extract_patient_list` helper，自动识别 `results`/`patients` 键并将扁平 `guideline_results` 包装为 `clinical_questions` 嵌套结构
+- **`[] or fallback` 布尔短路陷阱** — 使用显式 `"results" in batch_data` 检查替代 `or` 短路，避免空列表错误回退
+
+### Added
+- **完整 JSON 输出模板** — batch prompt 现在包含完整的顶层 JSON 结构模板，明确 `"results"` 键名和扁平结构要求
+- **Anti-subagent 指令** — batch prompt 的 MANDATORY_RULES 新增规则 6-7，禁止 LLM 使用 Agent/Task tool 或编写脚本批量执行 grep
+- **静默失败警告** — 当 batch 文件有 `batch_id` 但无法提取患者时，输出 stderr 警告
+- **10 个新测试** (80 total) — _extract_patient_list helper (5)、prompt 模板 (2)、merge 兼容性 (3)
+
 ## [2.3.0] - 2026-03-25
 
 ### Added
