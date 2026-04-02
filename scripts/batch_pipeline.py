@@ -8,7 +8,7 @@
   orchestrate - 自动编排批处理流程（扫描知识库+生成 prompt）
   merge       - 合并多个 rag_batch_*.json 为 rag_results.json
   validate    - 检查 rag_results.json 质量与完整性
-  generate    - 从 RAG 结果 JSON 生成 xlsx/docx/pptx 产出物
+  generate    - 从 RAG 结果 JSON 生成 Markdown 报告
 """
 
 from __future__ import annotations
@@ -1191,7 +1191,7 @@ def cmd_orchestrate(args):
         "next_steps": [
             f"python scripts/batch_pipeline.py merge --input-dir {output_dir} --output {output_dir.parent / 'rag_results.json'}",
             f"python scripts/batch_pipeline.py validate --input {output_dir.parent / 'rag_results.json'} --patients {patients_path}",
-            f"python scripts/batch_pipeline.py generate --input {output_dir.parent / 'rag_results.json'} --format all",
+            f"python scripts/batch_pipeline.py generate --input {output_dir.parent / 'rag_results.json'} --format md",
         ],
         "stats": {
             "total_grep_commands": total_grep,
@@ -2701,6 +2701,8 @@ def generate_pptx(data: dict, output_path: Path):
 
 def cmd_generate(args):
     """generate 子命令入口"""
+    import warnings
+
     input_path = Path(args.input).resolve()
     if not input_path.exists():
         print(f"RAG 结果文件不存在: {input_path}", file=sys.stderr)
@@ -2710,19 +2712,22 @@ def cmd_generate(args):
     patient_count = data.get("patient_count", len(data.get("results", [])))
     print(f"加载 RAG 结果: {patient_count} 位患者\n")
 
-    # 按姓名音序排列 (§1.7)
     if data.get("results"):
         data["results"] = _sort_results_by_name(data["results"])
 
     output_dir = Path(args.output_dir).resolve()
     fmt = args.format
 
-    if fmt in ("all", "xlsx"):
-        generate_xlsx(data, output_dir / "批量推荐汇总表.xlsx")
-    if fmt in ("all", "docx"):
-        generate_docx(data, output_dir / "reports")
-    if fmt in ("all", "pptx"):
-        generate_pptx(data, output_dir / "批量推荐幻灯片.pptx")
+    if fmt in ("xlsx", "docx", "pptx"):
+        warnings.warn(
+            f"--format {fmt} 已废弃，已降级为 Markdown 输出。将在未来版本移除。",
+            FutureWarning,
+            stacklevel=2,
+        )
+
+    generated_at = data.get("generated_at", str(date.today()))
+    filename = f"批量指南推荐报告_{generated_at.replace('-', '')}.md"
+    generate_md(data, output_dir / filename)
 
     print(f"\n生成完成 → {output_dir}/")
 
@@ -2817,14 +2822,14 @@ def main():
     )
 
     # generate
-    p_gen = sub.add_parser("generate", help="从 RAG 结果生成产出物")
+    p_gen = sub.add_parser("generate", help="从 RAG 结果生成 Markdown 报告")
     p_gen.add_argument("--input", required=True, help="RAG 结果 JSON 路径")
     p_gen.add_argument("--output-dir", default="Output", help="输出目录")
     p_gen.add_argument(
         "--format",
-        choices=["all", "xlsx", "docx", "pptx"],
-        default="all",
-        help="输出格式 (默认 all)",
+        choices=["all", "md", "xlsx", "docx", "pptx"],
+        default="md",
+        help="输出格式 (默认 md；xlsx/docx/pptx 已废弃)",
     )
 
     args = parser.parse_args()

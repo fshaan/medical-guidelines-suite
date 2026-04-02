@@ -642,3 +642,72 @@ def test_generate_md_single_patient(tmp_path):
     content = output_path.read_text(encoding="utf-8")
     assert "独一" in content
     assert "患者数: 1" in content
+
+
+def test_generate_legacy_format_xlsx_warning(tmp_path):
+    import argparse
+    from scripts.batch_pipeline import cmd_generate
+
+    rag_path = _make_rag_results(tmp_path)
+    custom_dir = tmp_path / "legacy_out"
+    args = argparse.Namespace(
+        input=str(rag_path), output_dir=str(custom_dir), format="xlsx"
+    )
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        cmd_generate(args)
+        future_warnings = [x for x in w if issubclass(x.category, FutureWarning)]
+        assert len(future_warnings) == 1
+        assert "xlsx" in str(future_warnings[0].message)
+    md_files = list(custom_dir.glob("*.md"))
+    assert len(md_files) == 1
+
+
+def test_generate_legacy_format_docx_warning(tmp_path):
+    import argparse
+    from scripts.batch_pipeline import cmd_generate
+
+    rag_path = _make_rag_results(tmp_path)
+    custom_dir = tmp_path / "legacy_out"
+    args = argparse.Namespace(
+        input=str(rag_path), output_dir=str(custom_dir), format="docx"
+    )
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        cmd_generate(args)
+        future_warnings = [x for x in w if issubclass(x.category, FutureWarning)]
+        assert len(future_warnings) == 1
+        assert "docx" in str(future_warnings[0].message)
+
+
+def test_generate_legacy_format_pptx_warning(tmp_path):
+    import argparse
+    from scripts.batch_pipeline import cmd_generate
+
+    rag_path = _make_rag_results(tmp_path)
+    custom_dir = tmp_path / "legacy_out"
+    args = argparse.Namespace(
+        input=str(rag_path), output_dir=str(custom_dir), format="pptx"
+    )
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        cmd_generate(args)
+        future_warnings = [x for x in w if issubclass(x.category, FutureWarning)]
+        assert len(future_warnings) == 1
+        assert "pptx" in str(future_warnings[0].message)
+
+
+def test_generate_md_format_no_warning(tmp_path):
+    import argparse
+    from scripts.batch_pipeline import cmd_generate
+
+    rag_path = _make_rag_results(tmp_path)
+    custom_dir = tmp_path / "md_out"
+    args = argparse.Namespace(
+        input=str(rag_path), output_dir=str(custom_dir), format="md"
+    )
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        cmd_generate(args)
+        future_warnings = [x for x in w if issubclass(x.category, FutureWarning)]
+        assert len(future_warnings) == 0
