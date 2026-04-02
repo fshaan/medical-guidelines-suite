@@ -32,7 +32,6 @@
       {"path": "references/input_format.md", "required": true, "description": "Batch input Excel format specification (structured + narrative)"},
       {"path": "templates/data_structure_root.md", "required": false, "description": "Template for root knowledge base index"},
       {"path": "templates/data_structure_org.md", "required": false, "description": "Template for organization-specific index"},
-      {"path": "templates/report_template.pptx", "required": true, "description": "PowerPoint template with branded layouts for batch report slides"},
       {"path": "scripts/extract_pdf.py", "required": false, "description": "PDF text extraction script using pdftotext"},
       {"path": "scripts/extract_docx.py", "required": false, "description": "DOCX text extraction script using python-docx"},
       {"path": "scripts/extract_all.py", "required": false, "description": "Batch extraction entry point for all guideline files"},
@@ -46,7 +45,7 @@
     "requires": {
       "bins": ["grep", "python3"],
       "optional_bins": ["pdftotext"],
-      "pip": ["openpyxl", "python-docx", "python-pptx"]
+      "pip": ["openpyxl"]
     },
     "triggers": [
       "指南推荐",

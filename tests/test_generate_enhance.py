@@ -711,3 +711,78 @@ def test_generate_md_format_no_warning(tmp_path):
         cmd_generate(args)
         future_warnings = [x for x in w if issubclass(x.category, FutureWarning)]
         assert len(future_warnings) == 0
+
+
+def test_md_escape_html_entities():
+    from scripts.batch_pipeline import md_escape
+
+    assert "&lt;" in md_escape("<script>")
+    assert "&gt;" in md_escape("</script>")
+    assert "&amp;" in md_escape("A&B")
+
+
+def test_md_escape_newline():
+    from scripts.batch_pipeline import md_escape
+
+    assert "\n" not in md_escape("line1\nline2")
+    assert md_escape("line1\nline2") == "line1 line2"
+
+
+def test_md_escape_underscore_hash_tilde():
+    from scripts.batch_pipeline import md_escape
+
+    assert md_escape("a_b") == "a\\_b"
+    assert md_escape("#title") == "\\#title"
+    assert md_escape("~~del~~") == "\\~\\~del\\~\\~"
+
+
+def test_generate_legacy_format_all_warning(tmp_path):
+    import argparse
+    from scripts.batch_pipeline import cmd_generate
+
+    rag_path = _make_rag_results(tmp_path)
+    custom_dir = tmp_path / "all_out"
+    args = argparse.Namespace(
+        input=str(rag_path), output_dir=str(custom_dir), format="all"
+    )
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        cmd_generate(args)
+        future_warnings = [x for x in w if issubclass(x.category, FutureWarning)]
+        assert len(future_warnings) == 1
+        assert "all" in str(future_warnings[0].message)
+
+
+def test_generate_md_duplicate_name_anchors(tmp_path):
+    from scripts.batch_pipeline import generate_md
+
+    data = {
+        "generated_at": "2026-04-02",
+        "patient_count": 2,
+        "results": [
+            {
+                "patient_id": "P001",
+                "patient_name": "张三",
+                "primary_site": "胃体",
+                "disease_type": "胃癌",
+                "diagnosis_summary": "摘要",
+                "clinical_questions": [],
+            },
+            {
+                "patient_id": "P002",
+                "patient_name": "张三",
+                "primary_site": "结肠",
+                "disease_type": "结肠癌",
+                "diagnosis_summary": "摘要",
+                "clinical_questions": [],
+            },
+        ],
+    }
+    output_path = tmp_path / "report.md"
+    generate_md(data, output_path)
+    content = output_path.read_text(encoding="utf-8")
+    toc = content.split("---")[0]
+    links = [line for line in toc.split("\n") if line.startswith("- [")]
+    assert len(links) == 2
+    anchors = [line.split("(#")[1].rstrip(")") for line in links]
+    assert anchors[0] != anchors[1], "Duplicate name anchors should be unique"

@@ -1962,12 +1962,19 @@ def md_escape(text: str) -> str:
     """转义 Markdown 特殊字符"""
     if not text:
         return ""
+    text = text.replace("&", "&amp;")
+    text = text.replace("<", "&lt;")
+    text = text.replace(">", "&gt;")
     text = text.replace("\\", "\\\\")
+    text = text.replace("\n", " ").replace("\r", "")
     text = text.replace("|", "\\|")
     text = text.replace("*", "\\*")
     text = text.replace("[", "\\[")
     text = text.replace("]", "\\]")
     text = text.replace("`", "\\`")
+    text = text.replace("_", "\\_")
+    text = text.replace("#", "\\#")
+    text = text.replace("~", "\\~")
     return text
 
 
@@ -2025,6 +2032,16 @@ def generate_md(data: dict, output_path: Path):
     generated_at = data.get("generated_at", str(date.today()))
     patient_count = data.get("patient_count", len(rows))
 
+    seen_slugs: dict[str, int] = {}
+
+    def _unique_slug(text: str) -> str:
+        base = _slugify(text)
+        if base in seen_slugs:
+            seen_slugs[base] += 1
+            return f"{base}-{seen_slugs[base]}"
+        seen_slugs[base] = 1
+        return base
+
     lines = []
     lines.append("# 批量指南推荐报告")
     lines.append("")
@@ -2032,10 +2049,12 @@ def generate_md(data: dict, output_path: Path):
     lines.append("")
     lines.append("## 目录")
 
+    slug_map: dict[str, str] = {}
     for row in rows:
         pid = row["patient_id"]
         name = md_escape(row["patient_name"])
-        slug = _slugify(f"{pid} {row['patient_name']}")
+        slug = _unique_slug(f"{pid} {row['patient_name']}")
+        slug_map[pid] = slug
         lines.append(f"- [{name}](#{slug})")
 
     lines.append("")
@@ -2162,7 +2181,7 @@ def cmd_generate(args):
     output_dir = Path(args.output_dir).resolve()
     fmt = args.format
 
-    if fmt in ("xlsx", "docx", "pptx"):
+    if fmt in ("all", "xlsx", "docx", "pptx"):
         warnings.warn(
             f"--format {fmt} 已废弃，已降级为 Markdown 输出。将在未来版本移除。",
             FutureWarning,
@@ -2170,7 +2189,8 @@ def cmd_generate(args):
         )
 
     generated_at = data.get("generated_at", str(date.today()))
-    filename = f"批量指南推荐报告_{generated_at.replace('-', '')}.md"
+    safe_date = re.sub(r"[^\w-]", "", generated_at)
+    filename = f"批量指南推荐报告_{safe_date}.md"
     generate_md(data, output_dir / filename)
 
     print(f"\n生成完成 → {output_dir}/")
