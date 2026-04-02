@@ -1,4 +1,4 @@
-# Medical Guidelines Suite v2.4.0
+# Medical Guidelines Suite v2.5.0
 
 Clinical guidelines knowledge base builder, retrieval engine, and batch patient report generator.
 
@@ -18,7 +18,7 @@ git clone https://github.com/fshaan/medical-guidelines-suite \
   ~/.claude/skills/medical-guidelines-suite
 
 # Install Python dependencies
-pip install openpyxl python-docx python-pptx pdfplumber
+pip install openpyxl pdfplumber
 # or: brew install poppler  (for pdftotext)
 ```
 
@@ -71,7 +71,7 @@ python scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Outp
 python scripts/batch_pipeline.py validate --input Output/rag_results.json --patients Output/patients.json
 
 # Generate reports
-python scripts/batch_pipeline.py generate --input Output/rag_results.json --format all
+python scripts/batch_pipeline.py generate --input Output/rag_results.json --format md
 ```
 
 Or simply ask Claude: "对 patients.xlsx 中的患者，批量检索指南推荐"

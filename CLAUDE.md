@@ -64,10 +64,10 @@ medical-guidelines-suite/
 │   └── input_format.md         # Input xlsx format spec (26 fields)
 ├── templates/
 │   ├── data_structure_root.md  # Root index template
-│   ├── data_structure_org.md   # Organization index template
-│   └── report_template.pptx    # PPTX slide template
-├── tests/                      # pytest suite (118 tests)
+│   └── data_structure_org.md   # Organization index template
+├── tests/                      # pytest suite (148 tests)
 ├── docs/                       # Design documents
+│   └── solutions/              # Documented solutions (bugs, patterns), YAML frontmatter searchable by module/tags
 ├── Input/                      # User input files (xlsx, patients.json)
 └── Output/                     # Generated outputs (auto-created)
 ```
@@ -101,13 +101,13 @@ python scripts/batch_pipeline.py orchestrate \
 python scripts/batch_pipeline.py verify-batch --input-dir Output/batches/ --kb-root $MEDICAL_GUIDELINES_DIR
 python scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
 python scripts/batch_pipeline.py validate --input Output/rag_results.json --patients Output/patients.json
-python scripts/batch_pipeline.py generate --input Output/rag_results.json --format all
+python scripts/batch_pipeline.py generate --input Output/rag_results.json --format md
 ```
 
 ### Testing
 
 ```bash
-python -m pytest tests/ -v          # Run all tests (118)
+python -m pytest tests/ -v          # Run all tests (148)
 python -m pytest tests/ -v -k scan  # Run specific tests
 ```
 
@@ -129,9 +129,7 @@ python -m pytest tests/ -v -k scan  # Run specific tests
 | Tool | Purpose |
 |------|---------|
 | `pdftotext` (poppler) | PDF text extraction |
-| `python-docx` | DOCX reading + report generation |
-| `openpyxl` | Excel reading + summary generation |
-| `python-pptx` | PPTX slide generation |
+| `openpyxl` | Excel reading (input parsing) |
 
 **NOT required**: Embedding models, vector databases, additional LLM APIs
 

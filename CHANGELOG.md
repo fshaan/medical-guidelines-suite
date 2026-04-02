@@ -5,6 +5,25 @@ All notable changes to the Medical Guidelines Suite will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v2.5.0 (2026-04-03)
+
+### Changed
+- `generate` 子命令现在输出单一 Markdown 报告（替代原有的 xlsx/docx/pptx 三格式输出）
+  - 卡片式指南推荐布局，TOC 锚点导航，证据等级对照表，附录
+  - `--format xlsx/docx/pptx/all` 仍可用但会发出 `FutureWarning` 并降级为 MD
+
+### Added
+- `md_escape()` 完整转义链：HTML 实体 + 换行处理 + 14 种 Markdown 特殊字符
+- TOC 锚点去重（同名患者自动加后缀）
+- 文件名白名单过滤（防止 LLM JSON 中的路径遍历）
+- `docs/solutions/` 知识库目录（首篇：AI 代码迁移审查清单）
+- 30 个新测试（148 total）
+
+### Removed
+- `generate_xlsx()`、`generate_docx()`、`generate_pptx()` 三个生成函数
+- `templates/report_template.pptx` 幻灯片模板
+- `python-docx`、`python-pptx` pip 依赖
+
 ## v2.4.0 (2026-04-01)
 
 ### Added
