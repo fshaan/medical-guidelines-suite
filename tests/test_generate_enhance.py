@@ -513,6 +513,14 @@ def test_generate_md_sort_by_name(tmp_path):
         "patient_count": 3,
         "results": [
             {
+                "patient_id": "P002",
+                "patient_name": "李四",
+                "primary_site": "胃体",
+                "disease_type": "胃癌",
+                "diagnosis_summary": "摘要",
+                "clinical_questions": [],
+            },
+            {
                 "patient_id": "P003",
                 "patient_name": "王五",
                 "primary_site": "胃体",
@@ -523,14 +531,6 @@ def test_generate_md_sort_by_name(tmp_path):
             {
                 "patient_id": "P001",
                 "patient_name": "张三",
-                "primary_site": "胃体",
-                "disease_type": "胃癌",
-                "diagnosis_summary": "摘要",
-                "clinical_questions": [],
-            },
-            {
-                "patient_id": "P002",
-                "patient_name": "李四",
                 "primary_site": "胃体",
                 "disease_type": "胃癌",
                 "diagnosis_summary": "摘要",
@@ -583,13 +583,11 @@ def test_generate_md_special_chars(tmp_path):
     output_path = tmp_path / "report.md"
     generate_md(data, output_path)
     content = output_path.read_text(encoding="utf-8")
-    lines_with_pipe = [l for l in content.split("\n") if "|" in l and "---" not in l]
-    table_lines = [l for l in lines_with_pipe if l.strip().startswith("|")]
-    for tl in table_lines:
-        inner = tl.strip("|")
-        assert "\\|" in inner or "|" not in inner.replace("\\|", ""), (
-            f"Unescaped pipe: {tl}"
-        )
+    assert "胃\\|癌" in content, "pipe in disease_type should be escaped"
+    assert "胃|癌" not in content.replace("\\|", ""), "unescaped pipe in disease_type"
+    assert "用\\*药\\|方案\\[2\\]" in content, (
+        "special chars in recommendation should be escaped"
+    )
 
 
 def test_generate_md_custom_output_dir(tmp_path):

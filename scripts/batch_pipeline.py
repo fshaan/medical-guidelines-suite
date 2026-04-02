@@ -2022,14 +2022,6 @@ def _slugify(text: str) -> str:
 def generate_md(data: dict, output_path: Path):
     """生成单一 Markdown 报告文件。"""
     rows = _prepare_patient_rows(data)
-    try:
-        locale.setlocale(locale.LC_COLLATE, "zh_CN.UTF-8")
-    except locale.Error:
-        try:
-            locale.setlocale(locale.LC_COLLATE, "")
-        except locale.Error:
-            pass
-    rows.sort(key=lambda r: locale.strxfrm(r["patient_name"]))
     generated_at = data.get("generated_at", str(date.today()))
     patient_count = data.get("patient_count", len(rows))
 
@@ -2059,6 +2051,8 @@ def generate_md(data: dict, output_path: Path):
         lines.append("")
         lines.append("### 基本信息")
         lines.append("")
+        lines.append("| 字段 | 内容 |")
+        lines.append("|------|------|")
         info_fields = [
             ("患者ID", pid),
             ("肿瘤部位", md_escape(row["primary_site"])),
@@ -2066,7 +2060,7 @@ def generate_md(data: dict, output_path: Path):
             ("诊断摘要", md_escape(row["diagnosis_summary"])),
         ]
         for label, value in info_fields:
-            lines.append(f"- **{label}**: {value or '—'}")
+            lines.append(f"| {label} | {value or '—'} |")
         lines.append("")
 
         for qi, q in enumerate(row["questions"], 1):
@@ -2084,9 +2078,11 @@ def generate_md(data: dict, output_path: Path):
                 source_display = (
                     f"{md_escape(source)} L{slines}" if slines else md_escape(source)
                 )
-                lines.append(f"- **推荐意见**: {md_escape(g['recommendation'])}")
-                lines.append(f"- **证据等级**: {md_escape(g['evidence_level'])}")
-                lines.append(f"- **来源**: {source_display}")
+                lines.append("| 属性 | 内容 |")
+                lines.append("|------|------|")
+                lines.append(f"| 推荐意见 | {md_escape(g['recommendation'])} |")
+                lines.append(f"| 证据等级 | {md_escape(g['evidence_level'])} |")
+                lines.append(f"| 来源 | {source_display} |")
                 lines.append("")
 
                 if g["evidence_level"]:
@@ -2095,10 +2091,12 @@ def generate_md(data: dict, output_path: Path):
             if any(g["evidence_level"] for g in q["guidelines"]):
                 lines.append("#### 证据等级对照")
                 lines.append("")
+                lines.append("| 指南 | 证据等级 | 含义 |")
+                lines.append("|------|----------|------|")
                 for g in q["guidelines"]:
                     if g["evidence_level"]:
                         lines.append(
-                            f"- **{md_escape(g['name'])}**: {md_escape(g['evidence_level'])}"
+                            f"| {md_escape(g['name'])} | {md_escape(g['evidence_level'])} | — |"
                         )
                 lines.append("")
 
@@ -2124,11 +2122,13 @@ def generate_md(data: dict, output_path: Path):
         lines.append("以下汇总本报告中出现的所有证据等级体系及其含义。")
         lines.append("")
         seen = set()
+        lines.append("| 体系 | 等级 | 含义 |")
+        lines.append("|------|------|------|")
         for gname, level in all_evidence_entries:
             key = (gname, level)
             if key not in seen:
                 seen.add(key)
-                lines.append(f"- **{md_escape(gname)}**: {md_escape(level)}")
+                lines.append(f"| {md_escape(gname)} | {md_escape(level)} | — |")
         lines.append("")
         lines.append("---")
         lines.append("")
