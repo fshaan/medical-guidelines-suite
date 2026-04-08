@@ -5,6 +5,37 @@ All notable changes to the Medical Guidelines Suite will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v3.0.0 (2026-04-08)
+
+### Added
+- QMD 混合检索引擎（BM25 + 向量 + LLM 重排序），替代原有 grep 关键词检索
+- `index` 子命令：构建 QMD 集合索引并注入 Context 元数据
+- `scripts/retriever.py`：QMDService 上下文管理器，管理 QMD 服务生命周期
+- Docling 提取器（`extract_all.py` 重写）：PDF/DOCX → Markdown
+- `build_queries()` 辅助函数：从患者特征生成多维度自然语言查询
+- 反懒惰 V3 引用覆盖率检查 + V4 矛盾检测
+
+### Changed
+- `orchestrate` 改为 QMD 预检索模式：先检索再生成 prompt，LLM 只分析不检索
+- `generate_batch_prompt()` 输出预检索结果而非 grep 命令
+- `verify-batch` 简化为 V3/V4（移除 V1/V2 CMD-ID 检查）
+- `scan_knowledge_base()` 扫描 `*.md`（原 `*.txt`）
+- 去重算法使用完整内容 hash（原截断前 100 字符）
+
+### Removed
+- **[破坏性]** `--profile slim` 模式及 `ProfileConfig` 配置系统
+- **[破坏性]** `escape_grep_keyword()`、`generate_grep_commands()` 及所有 grep 检索代码
+- `scripts/extract_pdf.py`、`scripts/extract_docx.py`（被 Docling 替代）
+
+### Fixed
+- QMDService `__enter__` 启动失败时进程泄漏
+- MCP 响应解析器静默吞没 JSON-RPC 错误
+- stderr 管道死锁风险（改用 DEVNULL）
+
+### Dependencies
+- 新增：`docling`（pip）、`qmd`（npm -g @tobilu/qmd）
+- 移除：`pdftotext`（poppler）、`python-docx` 不再必需
+
 ## v2.5.0 (2026-04-03)
 
 ### Changed
