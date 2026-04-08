@@ -732,84 +732,6 @@ def estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
-def _generate_slim_prompt(
-    batch: list[dict],
-    kb_profile: dict,
-    kb_root: str,
-    batch_idx: int,
-    total_batches: int,
-    output_file: str,
-    config: "ProfileConfig",
-) -> str:
-    """生成 slim profile 的简化 batch prompt。"""
-    lines = []
-    lines.append(f"# 批次 {batch_idx:03d}/{total_batches:03d} 检索任务\n")
-    lines.append("<CONTEXT_RESET>")
-    lines.append("请忽略此消息之前的所有检索结果和患者信息。")
-    lines.append("以下是一个全新的、独立的批次任务。")
-    lines.append("</CONTEXT_RESET>\n")
-
-    lines.append("## 规则")
-    lines.append("- 逐条执行 grep 命令，不得跳过")
-    lines.append("- 不得调用任何工具、函数或子代理")
-    lines.append("- 所有输出使用简体中文")
-    lines.append("- 禁止编写脚本批量执行\n")
-
-    lines.append(f"## 知识库\n路径: {kb_root}\n")
-
-    # 步骤 1: grep 命令 + 微检查点
-    lines.append("## 步骤 1：执行 grep 命令\n")
-
-    for pi, patient in enumerate(batch, 1):
-        pid = patient.get("patient_id", "?")
-        pname = patient.get("patient_name", "?")
-        grep_cmds = patient.get("grep_commands", [])
-
-        lines.append(f"### 患者 P{pi:03d}: {pname} ({pid})\n")
-
-        for ci, gc in enumerate(grep_cmds, 1):
-            cmd_id = f"CMD-P{pi:03d}-{gc['org']}-{ci:02d}"
-            lines.append(f"{cmd_id}: {gc['command']}")
-
-        if config.micro_checkpoints and grep_cmds:
-            lines.append(
-                f"\n【自检 P{pi:03d}】确认执行了全部 {len(grep_cmds)} 条命令。\n"
-            )
-
-    # 步骤 2: JSON 输出
-    lines.append("## 步骤 2：输出 JSON\n")
-    lines.append("根据 grep 结果，输出以下格式（严格遵守，不得添加或省略字段）：\n")
-    lines.append("```json")
-    lines.append("{")
-    lines.append(f'  "batch_id": "batch_{batch_idx:03d}",')
-    lines.append('  "processed_at": "ISO时间戳",')
-    lines.append('  "results": [')
-    lines.append("    {")
-    lines.append('      "patient_id": "实际ID",')
-    lines.append('      "patient_name": "实际姓名",')
-    lines.append('      "clinical_question": "一句话临床问题摘要",')
-    lines.append('      "guideline": "NCCN",')
-    lines.append(
-        f'      "recommendation": ">={config.min_rec_length}字推荐内容（简体中文）",'
-    )
-    lines.append('      "evidence_level": "证据等级",')
-    lines.append('      "source_file": "匹配的文件名"')
-    lines.append("    }")
-    lines.append("  ]")
-    lines.append("}")
-    lines.append("```\n")
-
-    if config.micro_checkpoints:
-        lines.append("【最终自检】")
-        lines.append(f"- results 条目总数应 = 患者数 x guideline数")
-        lines.append(f"- 每条 recommendation >= {config.min_rec_length} 字\n")
-
-    if output_file:
-        lines.append(f"将完整 JSON 保存到: {output_file}")
-
-    return "\n".join(lines)
-
-
 def generate_batch_prompt(
     batch: list[dict],
     kb_profile: dict,
@@ -819,68 +741,53 @@ def generate_batch_prompt(
     output_file: str = "",
     config: "ProfileConfig | None" = None,
 ) -> str:
-    """生成自包含的批次 prompt 文件内容。"""
-    if config and config.flat_json:
-        return _generate_slim_prompt(
-            batch,
-            kb_profile,
-            kb_root,
-            batch_idx,
-            total_batches,
-            output_file,
-            config,
-        )
+    """Generate self-contained batch prompt (based on pre-retrieval results)."""
     lines = []
 
-    lines.append(f"# 批次 {batch_idx:03d}/{total_batches:03d} 检索任务\n")
+    lines.append(f"# Batch {batch_idx:03d}/{total_batches:03d} Analysis Task\n")
     lines.append("<CONTEXT_RESET>")
-    lines.append("请忽略此消息之前的所有检索结果和患者信息。")
-    lines.append("以下是一个全新的、独立的批次任务，从零开始处理。")
-    lines.append("不得引用或参考任何其他批次的结果。")
-    lines.append('不得使用"同上"、"与前面类似"、"参考前述"等表述。')
+    lines.append("Ignore all retrieval results and patient data before this message.")
+    lines.append("This is a fresh, independent batch task. Start from zero.")
+    lines.append("Do not reference any other batch results.")
     lines.append("</CONTEXT_RESET>\n")
 
     lines.append("<MANDATORY_RULES>")
-    lines.append("1. 必须逐条执行以下所有 grep 命令，不得跳过任何组织")
-    lines.append("2. 每位患者的每个指南组织都必须有检索结果")
-    lines.append('3. 如果某指南未涉及该问题，记录: "该指南未涉及此临床问题"')
-    lines.append("4. 输出必须为简体中文")
-    lines.append("5. 可以补充脚本未生成的关键词，但不得删减已有的 grep 命令")
-    lines.append(
-        "6. 禁止使用 Agent tool、Task tool 或任何并行/子代理机制。所有 grep 命令必须在当前会话中逐条执行"
-    )
-    lines.append("7. 禁止编写脚本批量执行 grep。必须逐条运行并记录结果")
+    lines.append("1. Carefully read each patient's pre-retrieved results and extract recommendations, evidence levels, and sources")
+    lines.append("2. Each patient must have results for every guideline organization")
+    lines.append('3. If pre-retrieval has no content for a guideline, record: "This guideline does not cover this clinical question"')
+    lines.append("4. Output must be in Simplified Chinese")
+    lines.append("5. Recommendations must be based on pre-retrieved results, not fabricated")
+    lines.append("6. Must cite which pre-retrieved chunks were used in retrieval_sources")
+    lines.append("7. Citation coverage requirement: cite at least 50% of pre-retrieved results")
     lines.append("</MANDATORY_RULES>\n")
 
-    lines.append(f"## 知识库\n路径: {kb_root}\n")
-    lines.append("根索引:\n---")
+    lines.append(f"## Knowledge Base\nPath: {kb_root}\n")
+    lines.append("Root index:\n---")
     lines.append(kb_profile.get("root_index_content", ""))
     lines.append("---\n")
 
-    lines.append(f"## 患者列表（本批次 {len(batch)} 人）\n")
+    lines.append(f"## Patient List (this batch: {len(batch)} patients)\n")
 
     for pi, patient in enumerate(batch, 1):
         pid = patient.get("patient_id", "?")
         pname = patient.get("patient_name", "?")
         features = patient.get("features", {})
-        grep_cmds = patient.get("grep_commands", [])
+        retrieval_results = patient.get("retrieval_results", [])
 
-        lines.append(f"### 患者 {pi}: {pname} ({pid})\n")
+        lines.append(f"### Patient {pi}: {pname} ({pid})\n")
 
-        lines.append("**临床信息:**")
+        lines.append("**Clinical info:**")
         for k, v in patient.items():
-            if k in ("features", "grep_commands") or v is None:
+            if k in ("features", "retrieval_results", "grep_commands"):
+                continue
+            if v is None:
                 continue
             lines.append(f"- {k}: {v}")
 
         confidence = features.get("confidence", "high")
-        lines.append(f"\n**脚本提取置信度**: {confidence}")
-        if confidence == "low":
-            lines.append(
-                "⚠ 该患者信息稀疏，请从临床叙述中补充推断关键词并扩展检索范围。"
-            )
+        lines.append(f"\n**Feature extraction confidence**: {confidence}")
 
-        lines.append("\n**脚本提取的关键词:**")
+        lines.append("\n**Extracted keywords:**")
         for dim_key in sorted(features.keys()):
             if dim_key.endswith("_keywords") and dim_key != "all_keywords":
                 kws = features[dim_key]
@@ -888,88 +795,83 @@ def generate_batch_prompt(
                     dim_name = dim_key.replace("_keywords", "")
                     lines.append(f"- {dim_name}: {', '.join(kws)}")
 
-        if grep_cmds:
+        if retrieval_results:
             lines.append(
-                f"\n#### 必须执行的 grep 命令（共 {len(grep_cmds)} 条，不得跳过）\n"
+                f"\n#### Pre-retrieved Results ({len(retrieval_results)} chunks)\n"
             )
-            current_org = None
-            org_seq = {}  # org -> current sequence number
-            for gc in grep_cmds:
-                org = gc["org"]
-                if org != current_org:
-                    current_org = org
-                    lines.append(f"**{current_org}（必须）:**")
-                org_seq.setdefault(org, 0)
-                org_seq[org] += 1
-                cmd_id = f"CMD-P{pi:03d}-{org}-{org_seq[org]:02d}"
-                lines.append(f"{cmd_id}: {gc['command']}")
-                lines.append(
-                    f"  → 记录到 execution_log: {{cmd_id, match_count, first_match_snippet (≥30字)}}"
-                )
+            by_org: dict[str, list] = {}
+            for ri, hit in enumerate(retrieval_results, 1):
+                path = hit.get("path", "")
+                org = path.split("/")[0] if "/" in path else "unknown"
+                by_org.setdefault(org, []).append((ri, hit))
 
-        total_cmds = len(grep_cmds) if grep_cmds else 0
+            for org, hits in by_org.items():
+                lines.append(f"**{org}:**\n")
+                for ri, hit in hits:
+                    score = hit.get("score", 0)
+                    context = hit.get("context", "")
+                    content = hit.get("content", "")
+                    path = hit.get("path", "")
+                    chunk_id = f"R{pi:03d}-{ri:02d}"
+                    lines.append(f"[{chunk_id}] (score={score:.2f}) {context}")
+                    lines.append(f"  file: {path}")
+                    lines.append(f"  content: {content}")
+                    lines.append("")
 
-        if total_cmds > 0:
-            lines.append(f"\n#### ✅ 检查点 [患者 {pi}: {pname}]")
-            lines.append(f"确认以上 {total_cmds} 条 grep 命令全部执行完毕。")
-            lines.append(f"在 JSON 输出中填写该患者的 execution_summary:")
-            lines.append(f"  total_commands_in_prompt: {total_cmds}")
+            min_citations = max(1, len(retrieval_results) // 2)
+            lines.append(f"#### Citation Requirement [Patient {pi}: {pname}]")
             lines.append(
-                f"  total_commands_executed: <实际执行数，必须等于 {total_cmds}>"
+                f"Cite chunk IDs (e.g. R{pi:03d}-01) in retrieval_sources. "
+                f"Coverage >= 50% (at least {min_citations} chunks)."
             )
-            lines.append(
-                f"  commands_with_zero_matches: [<列出 match_count=0 的 CMD-ID>]"
-            )
+        else:
+            lines.append("\n#### Pre-retrieved Results\n")
+            lines.append("No pre-retrieved results. Provide general guidance based on clinical info.\n")
 
-        lines.append("\n#### 补充检索")
-        lines.append("所有必须命令（CMD-*）执行完毕且记录到 execution_log 后，")
-        lines.append("可补充执行额外 grep 命令。补充命令不需要 CMD-ID。\n")
+        lines.append("")
 
-    lines.append("## 输出要求\n")
-    lines.append(f"- 文件路径: {output_file}")
-    lines.append("- 格式: JSON（严格按以下模板）")
-    lines.append("- 输出语言: 简体中文")
-    lines.append('- 顶层键必须是 `"results"`（不是 `"patients"`）')
+    lines.append("## Output Requirements\n")
+    lines.append(f"- File path: {output_file}")
+    lines.append("- Format: JSON (strict template below)")
+    lines.append("- Output language: Simplified Chinese")
+    lines.append('- Top-level key must be `"results"` (not `"patients"`)')
     lines.append("")
-    lines.append("完整 JSON 模板（必须严格遵循此结构）:")
+    lines.append("JSON template:")
+
     template = {
         "batch_id": f"batch_{batch_idx:03d}",
-        "processed_at": "2026-03-25T10:00:00",
+        "processed_at": "2026-04-08T10:00:00",
         "results": [
             {
-                "patient_id": "T002690492",
-                "patient_name": "章玉林",
-                "clinical_question": "临床问题摘要",
+                "patient_id": "P001",
+                "patient_name": "Patient Name",
+                "clinical_question": "Clinical question summary",
                 "guideline_results": [
                     {
                         "guideline": "NCCN",
                         "version": "2026.V2",
-                        "recommendation": "推荐内容（简体中文，≥50字）",
+                        "recommendation": "Recommendation (Chinese, >=50 chars)",
                         "evidence_level": "Category 1",
-                        "source_file": "NCCN_GastricCancer_2026.V2_EN.txt",
-                        "source_lines": "234-267",
-                        "execution_log": [
+                        "source_file": "NCCN/extracted/NCCN_Gastric_2026.md",
+                        "retrieval_sources": [
                             {
-                                "cmd_id": "CMD-P001-NCCN-01",
-                                "match_count": 14,
-                                "first_match_snippet": "第一个匹配行的文本片段（≥30字，match_count=0时为空字符串）",
+                                "chunk_id": "R001-01",
+                                "score": 0.85,
+                                "snippet": "First 40 chars of cited chunk...",
                             }
                         ],
                     }
                 ],
-                "consensus": ["各指南共识点1"],
-                "differences": ["各指南分歧点1"],
-                "execution_summary": {
-                    "total_commands_in_prompt": 30,
-                    "total_commands_executed": 30,
-                    "commands_with_zero_matches": ["CMD-P001-JGCA-02"],
-                },
+                "citation_coverage": 0.75,
+                "consensus": "Cross-guideline consensus analysis",
+                "differences": "Cross-guideline difference analysis",
             }
         ],
     }
+
     lines.append("```json")
     lines.append(json.dumps(template, ensure_ascii=False, indent=2))
-    lines.append("```")
+    lines.append("```\n")
 
     return "\n".join(lines)
 
