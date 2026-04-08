@@ -489,6 +489,40 @@ def filter_orgs_by_disease(kb_profile: dict, disease_type: str) -> list[str]:
     return relevant or kb_profile["orgs"]
 
 
+def build_queries(patient: dict, features: dict) -> list[str]:
+    """Build QMD queries from patient features. One query per clinical dimension.
+
+    Args:
+        patient: Patient data dict (with disease_type etc.)
+        features: Output of extract_patient_features()
+
+    Returns:
+        List of natural language query strings (1-N)
+    """
+    queries = []
+    disease = patient.get("disease_type", "")
+
+    staging = features.get("staging_keywords", [])
+    if staging:
+        queries.append(
+            f"{disease} {' '.join(staging)} diagnosis staging treatment"
+        )
+
+    molecular = features.get("molecular_keywords", [])
+    if molecular:
+        queries.append(
+            f"{disease} {' '.join(molecular)} targeted therapy immunotherapy"
+        )
+
+    treatment = features.get("treatment_keywords", [])
+    if treatment:
+        queries.append(
+            f"{disease} {' '.join(treatment)} recommended regimen evidence level"
+        )
+
+    return queries or [f"{disease} treatment recommendation"]
+
+
 def generate_grep_commands(
     patient_features: dict,
     kb_profile: dict,

@@ -86,3 +86,35 @@ def test_orchestrate_existing_plan_resume(mock_kb, patients_json, tmp_path):
     cmd_orchestrate(args)
     plan = json.loads((output_dir / "orchestration_plan.json").read_text(encoding="utf-8"))
     assert plan["total_patients"] == 12
+
+
+def test_build_queries_generates_per_dimension_queries():
+    from scripts.batch_pipeline import build_queries
+
+    patient = {"disease_type": "gastric cancer"}
+    features = {
+        "staging_keywords": ["T3", "N2", "M0"],
+        "molecular_keywords": ["HER2+", "PD-L1 CPS>=5"],
+        "treatment_keywords": ["chemotherapy", "targeted therapy"],
+        "all_keywords": ["T3", "N2", "M0", "HER2+", "chemotherapy"],
+    }
+
+    queries = build_queries(patient, features)
+
+    assert len(queries) == 3
+    assert "gastric cancer" in queries[0]
+    assert "T3" in queries[0]
+    assert "HER2+" in queries[1]
+    assert "chemotherapy" in queries[2]
+
+
+def test_build_queries_fallback_for_sparse_patient():
+    from scripts.batch_pipeline import build_queries
+
+    patient = {"disease_type": "gastric cancer"}
+    features = {"all_keywords": ["gastric"]}
+
+    queries = build_queries(patient, features)
+
+    assert len(queries) == 1
+    assert "gastric cancer" in queries[0]
