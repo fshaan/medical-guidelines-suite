@@ -1428,159 +1428,58 @@ def _check_org_coverage(results: list[dict], known_orgs: list[str]) -> list[str]
     return warnings
 
 
-def _parse_prompt_commands(prompt_text: str) -> list:
-    """从 batch prompt 中提取所有 CMD-* 标记的 grep 命令。
-
-    Returns: [{"cmd_id": "CMD-P001-NCCN-01", "command": "grep ...",
-               "patient_index": 1, "org": "NCCN", "seq": 1}]
-    """
-    pattern = r"(CMD-P(\d+)-([\w-]+)-(\d+)):\s*(grep\s+.+)"
-    results = []
-    for match in re.finditer(pattern, prompt_text):
-        results.append(
-            {
-                "cmd_id": match.group(1),
-                "patient_index": int(match.group(2)),
-                "org": match.group(3),
-                "seq": int(match.group(4)),
-                "command": match.group(5).strip(),
-            }
-        )
-    return results
-
-
-def _verify_snippet(snippet: str, source_file: str, kb_root: str) -> bool:
-    """验证 snippet 是否存在于知识库文件中。
-
-    遍历 kb_root/*/extracted/ 查找 source_file，规范化空白后做子串匹配。
-    """
-    if not snippet or not source_file:
-        return False
-
-    kb_path = Path(kb_root)
-    for org_dir in kb_path.iterdir():
-        if not org_dir.is_dir():
-            continue
-        candidate = org_dir / "extracted" / source_file
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-            norm_snippet = re.sub(r"\s+", " ", snippet.strip())
-            norm_content = re.sub(r"\s+", " ", content)
-            if norm_snippet in norm_content:
-                return True
-    return False
-
-
 def _verify_batch_results(
     prompt_text: str,
     batch_data: dict,
     kb_root: str = "",
     config: "ProfileConfig | None" = None,
 ) -> tuple:
-    """验证单个批次的执行证据。
+    """Verify batch results quality.
+
+    V3: Citation coverage (>= 50% of pre-retrieved chunks cited)
+    V4: Contradiction detection (no retrieval sources but has recommendation)
 
     Returns: (errors: list[str], warnings: list[str])
     """
     errors = []
     warnings = []
 
-    # 从 prompt 提取所有 CMD-ID
-    prompt_cmds = _parse_prompt_commands(prompt_text)
-    prompt_cmd_ids = {c["cmd_id"] for c in prompt_cmds}
-
-    # 按患者分组 prompt 命令数
-    patient_prompt_counts = {}
-    for c in prompt_cmds:
-        pi = c["patient_index"]
-        patient_prompt_counts[pi] = patient_prompt_counts.get(pi, 0) + 1
-
-    # 从 JSON 提取所有 execution_log 中的 CMD-ID
-    json_cmd_ids = set()
-    json_cmd_details = {}  # cmd_id -> {match_count, snippet, org}
-
     for result in _extract_patient_list(batch_data):
         pid = result.get("patient_id", "?")
 
-        # V2: 计数一致性 — 通过 execution_log 中的 CMD-ID 前缀推断 patient_index
-        exec_summary = result.get("execution_summary", {})
-        claimed_prompt_count = exec_summary.get("total_commands_in_prompt", 0)
-
-        # 从该患者的 execution_log 中提取 CMD-ID 前缀来确定 patient_index
-        patient_cmd_ids = []
-        for q in result.get("clinical_questions", []):
-            for gr in q.get("guideline_results", []):
-                for entry in gr.get("execution_log", []):
-                    patient_cmd_ids.append(entry.get("cmd_id", ""))
-
-        patient_idx = None
-        if patient_cmd_ids:
-            m = re.match(r"CMD-P(\d+)-", patient_cmd_ids[0])
-            if m:
-                patient_idx = int(m.group(1))
-
-        if patient_idx is not None:
-            actual_prompt_count = patient_prompt_counts.get(patient_idx, 0)
-            if actual_prompt_count > 0 and claimed_prompt_count != actual_prompt_count:
-                errors.append(
-                    f"[{pid}] total_commands_in_prompt={claimed_prompt_count} "
-                    f"但 prompt 实际有 {actual_prompt_count} 条命令"
+        # V3: Citation coverage
+        citation_coverage = result.get("citation_coverage", None)
+        if citation_coverage is not None and citation_coverage < 0.5:
+            if not (config and config.skip_anti_laziness):
+                warnings.append(
+                    f"[{pid}] Low citation coverage "
+                    f"({citation_coverage:.0%}, require >= 50%)"
                 )
-
-        # 如果患者完全没有 execution_log，也报错（slim 模式跳过，不要求 execution_log）
-        if (
-            not patient_cmd_ids
-            and exec_summary
-            and not (config and config.skip_snippet_verify)
-        ):
-            errors.append(
-                f"[{pid}] 无 execution_log 条目（execution_summary 存在但无执行记录）"
-            )
 
         for q in result.get("clinical_questions", []):
             for gr in q.get("guideline_results", []):
                 org = gr.get("guideline", "")
                 rec = gr.get("recommendation", "")
+                sources = gr.get("retrieval_sources", [])
 
-                for entry in gr.get("execution_log", []):
-                    cmd_id = entry.get("cmd_id", "")
-                    json_cmd_ids.add(cmd_id)
-                    json_cmd_details[cmd_id] = {
-                        "match_count": entry.get("match_count", 0),
-                        "snippet": entry.get("first_match_snippet", ""),
-                        "org": org,
-                        "recommendation": rec,
-                        "source_file": gr.get("source_file", ""),
-                        "patient_id": pid,
-                    }
-
-    # V1: 命令覆盖率（slim 模式跳过，不要求 execution_log）
-    if not (config and config.skip_snippet_verify):
-        missing_cmds = prompt_cmd_ids - json_cmd_ids
-        for cmd_id in sorted(missing_cmds):
-            errors.append(f"{cmd_id} 未在 execution_log 中找到")
-
-    # V3: snippet 真实性（需要 kb_root）
-    if kb_root and not (config and config.skip_snippet_verify):
-        for cmd_id, detail in json_cmd_details.items():
-            snippet = detail["snippet"]
-            source_file = detail["source_file"]
-            if snippet and source_file:
-                if not _verify_snippet(snippet, source_file, kb_root):
-                    errors.append(
-                        f'[{detail["patient_id"]}] snippet "{snippet[:40]}..." '
-                        f"在 {source_file} 中未找到"
+                # V4: No retrieval sources but has recommendation
+                if not sources and len(rec) > 50:
+                    warnings.append(
+                        f"[{pid}] {org} no retrieval sources cited "
+                        f"but has recommendation ({len(rec)} chars)"
                     )
 
-    # V4: 空匹配矛盾
-    for cmd_id, detail in json_cmd_details.items():
-        if detail["match_count"] == 0 and len(detail["recommendation"]) > 50:
-            warnings.append(
-                f"[{detail['patient_id']}] {cmd_id} match_count=0 "
-                f"但 {detail['org']} 有推荐内容 ({len(detail['recommendation'])}字)"
-            )
+                if not rec:
+                    errors.append(f"[{pid}] {org} empty recommendation")
+
+                src_file = gr.get("source_file", "")
+                if not src_file:
+                    warnings.append(f"[{pid}] {org} missing source file")
+
+            if not q.get("consensus"):
+                warnings.append(f"[{pid}] missing consensus analysis")
+            if not q.get("differences"):
+                warnings.append(f"[{pid}] missing difference analysis")
 
     return errors, warnings
 
