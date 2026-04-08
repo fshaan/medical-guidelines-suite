@@ -18,6 +18,7 @@ import json
 import locale
 import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -1377,6 +1378,79 @@ def _extract_patient_list(batch_data: dict) -> list[dict]:
     return [_deduplicate_guideline_results(p) for p in patients]
 
 
+# ─── index 子命令 ─────────────────────────────────────────────────────────────
+
+
+def cmd_index(args):
+    """index subcommand -- build QMD index and inject Context metadata."""
+    kb_root = resolve_kb_root(getattr(args, "kb_root", None))
+    print(f"知识库路径: {kb_root}")
+    force = getattr(args, "force", False)
+
+    orgs_found = []
+    for org_dir in sorted(kb_root.iterdir()):
+        if not org_dir.is_dir() or org_dir.name.startswith("."):
+            continue
+        extracted_dir = org_dir / "extracted"
+        if not extracted_dir.exists():
+            continue
+        md_files = sorted(extracted_dir.glob("*.md"))
+        if not md_files:
+            continue
+        orgs_found.append((org_dir.name, org_dir, md_files))
+
+    if not orgs_found:
+        print("No extracted/*.md files found", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Found {len(orgs_found)} organizations\n")
+
+    for org_name, org_dir, md_files in orgs_found:
+        extracted_dir = org_dir / "extracted"
+        cmd = [
+            "qmd", "collection", "add",
+            str(extracted_dir),
+            "--name", org_name,
+            "--mask", "**/*.md",
+        ]
+        if force:
+            cmd.append("--force")
+        print(f"  collection: {org_name}")
+        subprocess.run(cmd, check=True)
+
+    print("\nGenerating embeddings (Qwen3-Embedding)...")
+    embed_env = {**os.environ, "QMD_EMBED_MODEL": "Qwen3-Embedding"}
+    embed_cmd = ["qmd", "embed"]
+    if force:
+        embed_cmd.append("-f")
+    subprocess.run(embed_cmd, check=True, env=embed_env)
+
+    print("\nInjecting contexts...")
+    for org_name, org_dir, md_files in orgs_found:
+        ds_path = org_dir / "data_structure.md"
+        if ds_path.exists():
+            first_line = ds_path.read_text(encoding="utf-8").split("\n")[0]
+            org_desc = first_line.lstrip("# ").strip() or org_name
+        else:
+            org_desc = org_name
+
+        subprocess.run(
+            ["qmd", "context", "add", f"qmd://{org_name}", org_desc],
+            check=True,
+        )
+        print(f"  context: {org_name} = {org_desc}")
+
+        for md_file in md_files:
+            file_desc = f"{org_name} {md_file.stem.replace('_', ' ')}"
+            subprocess.run(
+                ["qmd", "context", "add",
+                 f"qmd://{org_name}/{md_file.stem}", file_desc],
+                check=True,
+            )
+
+    print(f"\nIndex complete: {len(orgs_found)} organizations")
+
+
 # ─── merge 子命令 ─────────────────────────────────────────────────────────────
 
 
@@ -2272,6 +2346,11 @@ def main():
         help="验证模式 (默认 full)",
     )
 
+    # index
+    p_index = sub.add_parser("index", help="Build QMD index and inject Context metadata")
+    p_index.add_argument("--kb-root", help="Knowledge base root directory")
+    p_index.add_argument("--force", action="store_true", help="Force rebuild index")
+
     # verify-batch
     p_verify = sub.add_parser("verify-batch", help="验证批次执行证据的真实性")
     p_verify.add_argument("--input-dir", required=True, help="批次结果所在目录")
@@ -2307,6 +2386,8 @@ def main():
         cmd_merge(args)
     elif args.command == "validate":
         cmd_validate(args)
+    elif args.command == "index":
+        cmd_index(args)
     elif args.command == "verify-batch":
         cmd_verify_batch(args)
     elif args.command == "generate":
