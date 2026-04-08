@@ -60,31 +60,7 @@ class TestFilterOrgsByDisease:
         assert result == ["NCCN", "JGCA"]
 
 
-class TestGrepGenerationSlim:
-    def _make_features(self):
-        return {
-            "diagnosis_keywords": ["胃癌", "gastric"],
-            "staging_keywords": ["T3"],
-            "metastasis_keywords": ["peritoneal"],
-            "molecular_keywords": ["HER2"],
-            "marker_keywords": ["CEA"],
-            "treatment_keywords": ["SOX"],
-            "event_keywords": ["术后"],
-            "comorbidity_keywords": ["diabetes"],
-            "special_keywords": ["elderly"],
-            "all_keywords": ["胃癌", "gastric", "T3", "peritoneal", "HER2", "CEA", "SOX", "术后", "diabetes", "elderly"],
-        }
-
-    def _make_kb_profile(self):
-        return {
-            "orgs": ["NCCN", "JGCA", "ESMO"],
-            "org_files": {
-                "NCCN": [{"file": "NCCN_GastricCancer.md"}],
-                "JGCA": [{"file": "JGCA_Gastric.md"}],
-                "ESMO": [{"file": "ESMO_GastricCancer.md"}],
-            },
-        }
-
+class TestSlimProfileDimensionGroups:
     def test_slim_profile_has_dimension_groups(self):
         config = get_profile("slim")
         assert config.dimension_groups is not None

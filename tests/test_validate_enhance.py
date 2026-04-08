@@ -75,15 +75,15 @@ def test_org_coverage_pass():
 
 
 def test_batch_depth_decay_detected():
-    """后半段匹配数 < 前半段 40% → WARNING"""
+    """后半段 retrieval_sources 数 < 前半段 40% -> WARNING"""
     results = []
     for bi in range(1, 4):
         results.append({
             "patient_id": f"P{bi:03d}", "batch_source": f"batch_{bi:03d}",
             "clinical_questions": [{"guideline_results": [
                 {"guideline": "NCCN", "recommendation": "x" * 100,
-                 "execution_log": [
-                     {"cmd_id": f"CMD-P001-NCCN-0{i}", "match_count": 10, "first_match_snippet": "y" * 30}
+                 "retrieval_sources": [
+                     {"chunk_id": f"R001-0{i}", "score": 0.8, "snippet": "y" * 30}
                      for i in range(1, 4)
                  ]},
             ]}],
@@ -93,9 +93,7 @@ def test_batch_depth_decay_detected():
             "patient_id": f"P{bi:03d}", "batch_source": f"batch_{bi:03d}",
             "clinical_questions": [{"guideline_results": [
                 {"guideline": "NCCN", "recommendation": "x" * 100,
-                 "execution_log": [
-                     {"cmd_id": f"CMD-P001-NCCN-01", "match_count": 1, "first_match_snippet": "z" * 30}
-                 ]},
+                 "retrieval_sources": []},
             ]}],
         })
     warnings = _check_batch_depth_decay(results)
@@ -104,15 +102,15 @@ def test_batch_depth_decay_detected():
 
 
 def test_batch_depth_no_decay():
-    """深度均匀 → 无 WARNING"""
+    """深度均匀 -> 无 WARNING"""
     results = []
     for bi in range(1, 5):
         results.append({
             "patient_id": f"P{bi:03d}", "batch_source": f"batch_{bi:03d}",
             "clinical_questions": [{"guideline_results": [
                 {"guideline": "NCCN", "recommendation": "x" * 100,
-                 "execution_log": [
-                     {"cmd_id": f"CMD-P001-NCCN-0{i}", "match_count": 10, "first_match_snippet": "y" * 30}
+                 "retrieval_sources": [
+                     {"chunk_id": f"R001-0{i}", "score": 0.8, "snippet": "y" * 30}
                      for i in range(1, 4)
                  ]},
             ]}],
@@ -122,12 +120,12 @@ def test_batch_depth_no_decay():
 
 
 def test_batch_depth_single_batch():
-    """单批次 → 跳过衰减检测"""
+    """单批次 -> 跳过衰减检测"""
     results = [{
         "patient_id": "P001", "batch_source": "batch_001",
         "clinical_questions": [{"guideline_results": [
             {"guideline": "NCCN", "recommendation": "x" * 100,
-             "execution_log": [{"cmd_id": "CMD-P001-NCCN-01", "match_count": 5, "first_match_snippet": "y" * 30}]},
+             "retrieval_sources": [{"chunk_id": "R001-01", "score": 0.8, "snippet": "y" * 30}]},
         ]}],
     }]
     warnings = _check_batch_depth_decay(results)
