@@ -1377,8 +1377,7 @@ def _check_batch_depth_decay(results: list) -> list:
             batch_stats[batch] = 0
         for q in r.get("clinical_questions", []):
             for gr in q.get("guideline_results", []):
-                for entry in gr.get("execution_log", []):
-                    batch_stats[batch] += entry.get("match_count", 0)
+                batch_stats[batch] += len(gr.get("retrieval_sources", []))
 
     sorted_batches = sorted(batch_stats.items())
     if len(sorted_batches) < 3:
@@ -1542,21 +1541,8 @@ def cmd_verify_batch(args):
                 print(f"    ⚠ {w}")
         else:
             total_pass += 1
-            prompt_cmds = _parse_prompt_commands(prompt_text)
-            # 统计 JSON 中实际记录的 CMD-ID 数
-            # _verify_batch_results 已通过 _extract_patient_list 原地包装了
-            # batch_data，此处直接读取已变换的 results（避免重复调用）
-            transformed = batch_data.get("results") or batch_data.get("patients", [])
-            json_cmd_count = sum(
-                len(entry.get("execution_log", []))
-                for r in transformed
-                for q in r.get("clinical_questions", [])
-                for entry in q.get("guideline_results", [])
-            )
-            print(f"  {bf.stem}: ✓ PASS ({json_cmd_count}/{len(prompt_cmds)} 命令)")
+            print(f"  {bf.stem}: ✓ PASS")
 
-    if not kb_root:
-        print("  ℹ V3 snippet 真实性验证已跳过（未提供 --kb-root）")
     print(f"\n总结: {total_pass} PASS, {total_fail} FAIL, {total_warn} WARN")
     if failed_batches:
         print(f"建议重新执行: {', '.join(failed_batches)}")
@@ -1631,11 +1617,22 @@ def cmd_validate(args):
                     warnings.append(
                         f"[{pid}] Q{qi} {g.get('guideline', '')} 缺失来源文件"
                     )
+                if not g.get("retrieval_sources"):
+                    warnings.append(
+                        f"[{pid}] Q{qi} {g.get('guideline', '')} 缺失检索来源"
+                    )
 
             if not q.get("consensus"):
                 warnings.append(f"[{pid}] Q{qi} 缺失共识分析")
             if not q.get("differences"):
                 warnings.append(f"[{pid}] Q{qi} 缺失差异分析")
+
+        # citation_coverage check
+        cov = r.get("citation_coverage")
+        if cov is not None and cov < 0.5 and not config.skip_anti_laziness:
+            warnings.append(
+                f"[{pid}] 引用覆盖率过低 ({cov:.0%}, 要求 >= 50%)"
+            )
 
         rec_lengths.append((pid, total_len))
 
