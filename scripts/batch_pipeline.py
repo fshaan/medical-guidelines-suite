@@ -333,9 +333,9 @@ def scan_knowledge_base(kb_root: Path) -> dict:
         if not extracted_dir.is_dir():
             print(f"  ⚠ {org}/ 无 extracted/ 子目录，跳过", file=sys.stderr)
             continue
-        txt_files = sorted(extracted_dir.glob("*.txt"))
+        txt_files = sorted(extracted_dir.glob("*.md"))
         if not txt_files:
-            print(f"  ⚠ {org}/extracted/ 无 .txt 文件，跳过", file=sys.stderr)
+            print(f"  ⚠ {org}/extracted/ 无 .md 文件，跳过", file=sys.stderr)
             continue
 
         profile["orgs"].append(org)

@@ -38,9 +38,9 @@ class TestFilterOrgsByDisease:
         kb_profile = {
             "orgs": ["NCCN", "JGCA", "ESMO"],
             "org_files": {
-                "NCCN": [{"file": "NCCN_GastricCancer_2026.txt", "path": "/kb/NCCN/extracted/NCCN_GastricCancer_2026.txt"}],
-                "JGCA": [{"file": "JGCA_Gastric_Guidelines.txt", "path": "/kb/JGCA/extracted/JGCA_Gastric_Guidelines.txt"}],
-                "ESMO": [{"file": "ESMO_BreastCancer_2025.txt", "path": "/kb/ESMO/extracted/ESMO_BreastCancer_2025.txt"}],
+                "NCCN": [{"file": "NCCN_GastricCancer_2026.md", "path": "/kb/NCCN/extracted/NCCN_GastricCancer_2026.md"}],
+                "JGCA": [{"file": "JGCA_Gastric_Guidelines.md", "path": "/kb/JGCA/extracted/JGCA_Gastric_Guidelines.md"}],
+                "ESMO": [{"file": "ESMO_BreastCancer_2025.md", "path": "/kb/ESMO/extracted/ESMO_BreastCancer_2025.md"}],
             },
         }
         result = filter_orgs_by_disease(kb_profile, "胃癌")
@@ -52,8 +52,8 @@ class TestFilterOrgsByDisease:
         kb_profile = {
             "orgs": ["NCCN", "JGCA"],
             "org_files": {
-                "NCCN": [{"file": "NCCN_Lung.txt", "path": "..."}],
-                "JGCA": [{"file": "JGCA_Lung.txt", "path": "..."}],
+                "NCCN": [{"file": "NCCN_Lung.md", "path": "..."}],
+                "JGCA": [{"file": "JGCA_Lung.md", "path": "..."}],
             },
         }
         result = filter_orgs_by_disease(kb_profile, "罕见病X")
@@ -79,9 +79,9 @@ class TestGrepGenerationSlim:
         return {
             "orgs": ["NCCN", "JGCA", "ESMO"],
             "org_files": {
-                "NCCN": [{"file": "NCCN_GastricCancer.txt"}],
-                "JGCA": [{"file": "JGCA_Gastric.txt"}],
-                "ESMO": [{"file": "ESMO_GastricCancer.txt"}],
+                "NCCN": [{"file": "NCCN_GastricCancer.md"}],
+                "JGCA": [{"file": "JGCA_Gastric.md"}],
+                "ESMO": [{"file": "ESMO_GastricCancer.md"}],
             },
         }
 
@@ -132,14 +132,14 @@ class TestSlimPrompt:
             },
             "grep_commands": [
                 {"org": "NCCN", "dimension": "diagnosis_staging_metastasis",
-                 "command": 'grep -n -i --include="*.txt" -r "胃癌" "/kb/NCCN/extracted"'},
+                 "command": 'grep -n -i --include="*.md" -r "胃癌" "/kb/NCCN/extracted"'},
             ],
         }]
 
     def _make_kb_profile(self):
         return {
             "orgs": ["NCCN"],
-            "org_files": {"NCCN": [{"file": "NCCN_Gastric.txt"}]},
+            "org_files": {"NCCN": [{"file": "NCCN_Gastric.md"}]},
             "root_index_content": "test index",
         }
 
@@ -190,11 +190,11 @@ class TestAggregateFlatResults:
     def test_groups_by_patient_id(self):
         flat = [
             {"patient_id": "P1", "patient_name": "张三", "clinical_question": "Q1",
-             "guideline": "NCCN", "recommendation": "推荐A", "evidence_level": "1", "source_file": "a.txt"},
+             "guideline": "NCCN", "recommendation": "推荐A", "evidence_level": "1", "source_file": "a.md"},
             {"patient_id": "P1", "patient_name": "张三", "clinical_question": "Q1",
-             "guideline": "JGCA", "recommendation": "推荐B", "evidence_level": "强", "source_file": "b.txt"},
+             "guideline": "JGCA", "recommendation": "推荐B", "evidence_level": "强", "source_file": "b.md"},
             {"patient_id": "P2", "patient_name": "李四", "clinical_question": "Q2",
-             "guideline": "NCCN", "recommendation": "推荐C", "evidence_level": "2A", "source_file": "c.txt"},
+             "guideline": "NCCN", "recommendation": "推荐C", "evidence_level": "2A", "source_file": "c.md"},
         ]
         result = _aggregate_flat_results(flat)
         assert len(result) == 2
@@ -205,7 +205,7 @@ class TestAggregateFlatResults:
     def test_single_patient_single_guideline(self):
         flat = [
             {"patient_id": "P1", "patient_name": "A", "clinical_question": "Q",
-             "guideline": "NCCN", "recommendation": "R", "evidence_level": "1", "source_file": "f.txt"},
+             "guideline": "NCCN", "recommendation": "R", "evidence_level": "1", "source_file": "f.md"},
         ]
         result = _aggregate_flat_results(flat)
         assert len(result) == 1
@@ -286,7 +286,7 @@ class TestValidateSlim:
                         "guideline": "NCCN",
                         "recommendation": "这是二十字的推荐文本至少够了吧应该",
                         "evidence_level": "1",
-                        "source_file": "f.txt",
+                        "source_file": "f.md",
                     }],
                     "consensus": ["c"],
                     "differences": ["d"],
