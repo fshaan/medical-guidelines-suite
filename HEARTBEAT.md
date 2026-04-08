@@ -69,8 +69,8 @@ for org_dir in "$KB_ROOT"/*/; do
   fi
 
   if [ -d "$org_dir/extracted" ]; then
-    txt_count="$(find "$org_dir/extracted" -name "*.txt" 2>/dev/null | wc -l)"
-    echo "  - $txt_count extracted text files"
+    md_count="$(find "$org_dir/extracted" -name "*.md" 2>/dev/null | wc -l)"
+    echo "  - $md_count extracted Markdown files"
   else
     echo "  ✗ No extracted/ directory"
   fi

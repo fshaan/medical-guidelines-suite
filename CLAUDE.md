@@ -64,7 +64,7 @@ medical-guidelines-suite/
 ├── templates/
 │   ├── data_structure_root.md  # Root index template
 │   └── data_structure_org.md   # Organization index template
-├── tests/                      # pytest suite (148 tests)
+├── tests/                      # pytest suite (134 tests)
 ├── docs/                       # Design documents
 │   └── solutions/              # Documented solutions (bugs, patterns), YAML frontmatter searchable by module/tags
 ├── Input/                      # User input files (xlsx, patients.json)

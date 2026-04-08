@@ -1,13 +1,13 @@
 ---
 name: medical-guidelines-suite
-version: 2.4.0
+version: 3.0.0
 description: |
   Medical Clinical Guidelines Knowledge Suite - Build, Query & Batch Process.
 
   Three-phase workflow:
-  1. BUILD (medical-guidelines-build): Convert PDF/DOCX → extracted/*.txt + generate indices
-  2. QUERY (medical-guidelines-rag): Search indices → Generate clinical recommendations
-  3. BATCH (medical-guidelines-batch): Excel patient list → RAG retrieval → xlsx/docx/pptx reports
+  1. BUILD (medical-guidelines-build): Convert PDF/DOCX → extracted/*.md (Docling) + generate indices
+  2. QUERY (medical-guidelines-rag): QMD hybrid retrieval → Generate clinical recommendations
+  3. BATCH (medical-guidelines-batch): Excel patient list → QMD pre-retrieval → Markdown reports
 
   TRIGGER when: "treatment options", "guideline recommendations", "add new guidelines",
   "build knowledge base", "批量推荐", "batch recommendations", "患者列表"
@@ -19,9 +19,8 @@ clawdis:
   emoji: "🏥"
   category: "medical"
   requires:
-    bins: [grep, python3]
-    optional_bins: [pdftotext]
-    pip: [openpyxl]
+    bins: [qmd, python3]
+    pip: [docling, openpyxl]
   triggers:
     - 指南推荐
     - 治疗方案
@@ -46,8 +45,8 @@ This suite contains three complementary skills:
 | Skill | Phase | Purpose |
 |-------|-------|---------|
 | medical-guidelines-build | Build | Convert files → Build indices |
-| medical-guidelines-rag | Query | Search indices → Generate answers |
-| medical-guidelines-batch | Batch | Patient list → RAG retrieval → Reports |
+| medical-guidelines-rag | Query | QMD hybrid retrieval → Generate answers |
+| medical-guidelines-batch | Batch | Patient list → QMD pre-retrieval → Markdown reports |
 
 ---
 
@@ -62,7 +61,7 @@ This skill **builds** the knowledge base that the retrieval skill **queries**.
 │  medical-guidelines-build       │     │  medical-guidelines-rag       │
 │  (This Phase)                   │     │  (Retrieval Phase)           │
 │                                  │     │                                │
-│  PDF/DOCX → extracted/*.txt      │     │  extracted/*.txt → Search      │
+│  PDF/DOCX → extracted/*.md       │     │  extracted/*.md → QMD Search   │
 │  + data_structure.md generation  │     │  + data_structure.md → Navigate│
 │                                  │     │                                │
 │  BUILD PHASE                     │────▶│  QUERY PHASE                   │
@@ -122,13 +121,10 @@ $KB_ROOT/
 │   ├── data_structure.md          # Organization index (MUST exist)
 │   ├── *.pdf                      # Original PDF files
 │   ├── *.docx                     # Original DOCX files
-│   └── extracted/                 # Extracted text directory
-│       ├── <filename>.txt         # Pre-extracted text (PRIMARY)
-│       └── <filename>_tables.txt  # Extracted tables (optional)
+│   └── extracted/                 # Extracted Markdown directory
+│       └── <filename>.md          # Docling-extracted Markdown (PRIMARY)
 └── scripts/                       # Extraction scripts (optional)
-    ├── extract_pdf.py
-    ├── extract_docx.py
-    └── extract_all.py
+    └── extract_all.py             # Docling batch extraction (PDF/DOCX → .md)
 ```
 
 ---
@@ -146,8 +142,8 @@ Multiple versions of the same guideline may coexist. Use the following naming co
 **Examples**:
 - `NCCN_GastricCancer_2026.V1_EN.pdf` - Gastric Cancer V1, 2026
 - `NCCN_GastricCancer_2026.V2_EN.pdf` - Gastric Cancer V2, 2026 (Latest)
-- `NCCN_GastricCancer_2026.V1_EN.txt` - Extracted text for V1
-- `NCCN_GastricCancer_2026.V2_EN.txt` - Extracted text for V2 (Latest)
+- `NCCN_GastricCancer_2026.V1_EN.md` - Extracted Markdown for V1
+- `NCCN_GastricCancer_2026.V2_EN.md` - Extracted Markdown for V2 (Latest)
 
 ### Version Selection Priority
 
@@ -168,8 +164,8 @@ In organization-level `data_structure.md`, mark the default version:
 
 | 文件 | 版本 | 状态 | 行数 |
 |------|------|------|------|
-| NCCN_GastricCancer_2026.V2_EN.txt | 2.2026 | **默认** | 6497 |
-| NCCN_GastricCancer_2026.V1_EN.txt | 1.2026 | 历史 | 6501 |
+| NCCN_GastricCancer_2026.V2_EN.md | 2.2026 | **默认** | 6497 |
+| NCCN_GastricCancer_2026.V1_EN.md | 1.2026 | 历史 | 6501 |
 ```
 
 ### Output Requirements
@@ -254,36 +250,27 @@ mkdir -p "$KB_ROOT/<Organization>/extracted"
 cp /path/to/source.pdf "$KB_ROOT/<Organization>/"
 ```
 
-**Step 2.2: Extract Text**
+**Step 2.2: Extract to Markdown (Docling)**
 
-For PDF files:
 ```bash
-# Using pdftotext (recommended)
-pdftotext -layout "$KB_ROOT/<Organization>/<file>.pdf" \
-    "$KB_ROOT/<Organization>/extracted/<file>.txt"
-
-# Alternative: Python script
-python scripts/extract_pdf.py "$KB_ROOT/<Organization>/<file>.pdf"
+# Extract all PDF/DOCX files in the knowledge base to Markdown
+python3 scripts/extract_all.py --force
 ```
 
-For DOCX files:
-```bash
-# Using python-docx
-python scripts/extract_docx.py "$KB_ROOT/<Organization>/<file>.docx"
-```
+Docling handles both PDF and DOCX files, producing `extracted/*.md` with preserved table structures.
 
 **Step 2.3: Verify Extraction Quality**
 
 ```bash
 # Check file size/lines
-wc -l "$KB_ROOT/<Organization>/extracted/*.txt"
+wc -l "$KB_ROOT/<Organization>/extracted/*.md"
 
 # Check Chinese encoding (if applicable)
-file "$KB_ROOT/<Organization>/extracted/*.txt"
+file "$KB_ROOT/<Organization>/extracted/*.md"
 # Should show: UTF-8 Unicode text
 
 # Preview content
-head -100 "$KB_ROOT/<Organization>/extracted/<file>.txt"
+head -100 "$KB_ROOT/<Organization>/extracted/<file>.md"
 ```
 
 ### Phase 3: Index Generation
@@ -308,7 +295,7 @@ Read the extracted text file and generate `data_structure.md`:
 
 | 文件 | 类型 | 行数 | 说明 |
 |------|------|------|------|
-| extracted/<name>.txt | 纯文本 | N | 预提取文本（首选） |
+| extracted/<name>.md | Markdown | N | Docling 提取（首选） |
 | <name>.pdf | PDF | — | 原始文件 |
 
 ## 章节结构
@@ -402,15 +389,15 @@ If root index doesn't exist, create it:
 # Check required files exist
 ls -la "$KB_ROOT/data_structure.md"
 ls -la "$KB_ROOT/<Organization>/data_structure.md"
-ls -la "$KB_ROOT/<Organization>/extracted/*.txt"
+ls -la "$KB_ROOT/<Organization>/extracted/*.md"
 ```
 
 **Step 4.2: Test Searchability**
 
 ```bash
 # Quick keyword test
-grep -n "treatment" "$KB_ROOT/<Organization>/extracted/*.txt" | head -5
-grep -n "推荐" "$KB_ROOT/<Organization>/extracted/*.txt" | head -5
+# Quick search test via QMD (after index is built)
+python3 scripts/batch_pipeline.py index --kb-root $KB_ROOT
 ```
 
 ---
@@ -420,18 +407,11 @@ grep -n "推荐" "$KB_ROOT/<Organization>/extracted/*.txt" | head -5
 ### Process Multiple Files
 
 ```bash
-# Extract all PDFs in a directory
-for pdf in "$KB_ROOT"/*/*.pdf; do
-    python scripts/extract_pdf.py "$pdf"
-done
+# Extract all PDF/DOCX files using Docling
+python3 scripts/extract_all.py --force
 
-# Extract all DOCX files
-for docx in "$KB_ROOT"/*/*.docx; do
-    python scripts/extract_docx.py "$docx"
-done
-
-# Or use the batch script
-python scripts/extract_all.py --force
+# Build QMD search index
+python3 scripts/batch_pipeline.py index --kb-root $KB_ROOT
 ```
 
 ### Rebuild All Indices
@@ -449,7 +429,7 @@ Before marking knowledge base as ready:
 
 - [ ] Root `$KB_ROOT/data_structure.md` exists and is complete
 - [ ] Each organization has `$KB_ROOT/<org>/data_structure.md`
-- [ ] All source files have corresponding `extracted/*.txt`
+- [ ] All source files have corresponding `extracted/*.md`
 - [ ] Chinese content uses UTF-8 encoding
 - [ ] Table content is readable in extracted text
 - [ ] Page number markers present (if PDF had them)
@@ -464,18 +444,18 @@ Before marking knowledge base as ready:
 
 | Problem | Solution |
 |---------|----------|
-| Chinese garbled | Verify poppler compiled with CJK support |
-| Tables broken | Try pdfplumber instead of pdftotext |
-| Missing content | Check if PDF is scanned (needs OCR) |
-| Wrong encoding | Re-extract with `--force` |
+| Chinese garbled | Verify Docling OCR language settings |
+| Tables broken | Check Docling table extraction output |
+| Missing content | Check if PDF is scanned (Docling handles OCR) |
+| Wrong encoding | Re-extract with `python3 scripts/extract_all.py --force` |
 
 ### DOCX Extraction Issues
 
 | Problem | Solution |
 |---------|----------|
-| Tables unreadable | Check python-docx table parsing |
-| Missing headings | Verify style detection |
-| Formatting lost | Expected - focus on content |
+| Tables unreadable | Check Docling Markdown table output |
+| Missing headings | Verify Docling heading detection |
+| Formatting lost | Expected - Docling preserves structure in Markdown |
 
 ---
 
@@ -493,7 +473,7 @@ After successful processing, report to user:
 | 知识库位置 | `$KB_ROOT` |
 | 新增组织 | <Organization> |
 | 原始文件 | <filename>.pdf (N KB) |
-| 提取文件 | extracted/<filename>.txt (M 行) |
+| 提取文件 | extracted/<filename>.md (M 行) |
 | 索引文件 | data_structure.md ✓ |
 
 ### 目录结构
@@ -505,15 +485,15 @@ $KB_ROOT/
     ├── data_structure.md
     ├── <filename>.pdf
     └── extracted/
-        └── <filename>.txt (M 行)
+        └── <filename>.md (M 行)
 ```
 
 ### 验证测试
 
 ```bash
 # 搜索测试
-grep -n "关键词" $KB_ROOT/<Organization>/extracted/*.txt
-# 输出: 找到 N 处匹配
+# 构建 QMD 索引后可进行检索测试
+python3 scripts/batch_pipeline.py index --kb-root $KB_ROOT
 ```
 
 ### 下一步
@@ -526,7 +506,7 @@ grep -n "关键词" $KB_ROOT/<Organization>/extracted/*.txt
 ## 9. File Processing References
 
 - `references/pdf_extraction.md` - PDF extraction detailed methods
-- `references/docx_extraction.md` - DOCX extraction detailed methods
+- `references/docx_extraction.md` - DOCX extraction detailed methods (legacy reference)
 - `references/index_generation.md` - data_structure.md templates
 
 ---
@@ -620,17 +600,17 @@ Regardless of location, the knowledge base MUST have this structure:
 ├── <Organization1>/                # e.g., NCCN, ESMO, CSCO
 │   ├── data_structure.md           # Organization index - REQUIRED
 │   ├── *.pdf / *.docx              # Original files
-│   └── extracted/*.txt             # Pre-extracted text (PRIMARY SOURCE)
+│   └── extracted/*.md              # Docling-extracted Markdown (PRIMARY SOURCE)
 ├── <Organization2>/
 │   ├── data_structure.md
-│   └── extracted/*.txt
+│   └── extracted/*.md
 └── ...
 ```
 
 **Required Files**:
 - `<ROOT>/data_structure.md` — Root index file (MUST exist)
 - `<ROOT>/<ORG>/data_structure.md` — Organization index file (MUST exist for each org)
-- `<ROOT>/<ORG>/extracted/*.txt` — Pre-extracted text files (MUST exist)
+- `<ROOT>/<ORG>/extracted/*.md` — Docling-extracted Markdown files (MUST exist)
 
 ### Dynamic Domain Detection
 
@@ -653,7 +633,7 @@ Before processing ANY PDF or DOCX file, you MUST:
 - [ ] Have read `references/pdf_reading.md` (when processing PDFs)
 - [ ] Have read `references/docx_reading.md` (when processing DOCX)
 - [ ] Have confirmed `extracted/` directory contains pre-extracted text
-- [ ] Use `extracted/*.txt` as PRIMARY source, NOT original files
+- [ ] Use `extracted/*.md` as PRIMARY source, NOT original files
 
 **Violation of this checklist is a protocol breach.**
 
@@ -664,7 +644,7 @@ Before processing ANY PDF or DOCX file, you MUST:
 - Guess guideline content instead of actually searching
 - Use web search as a substitute for knowledge base retrieval
 - Skip reading `data_structure.md` before searching
-- Read entire files (use grep for positioning + Read for local context)
+- Read entire files (use QMD retrieval for positioning + Read for local context)
 - Ignore evidence level differences across different grading systems
 - Mix evidence grading systems (e.g., don't report "Category 1" as "I级推荐")
 
@@ -801,17 +781,21 @@ KB_ROOT="<located_path>"  # e.g., /path/to/guidelines or /path/to/knowledge
 
 - Processing PDF: Read `references/pdf_reading.md`
 - Processing DOCX: Read `references/docx_reading.md`
-- Confirm using `extracted/*.txt`
+- Confirm using `extracted/*.md`
 
-### Step 5: Execute grep Search + Local Read
+### Step 5: Execute QMD Hybrid Retrieval
 
-```bash
-# Example: Search for targeted therapy
-grep -n "HER2" $KB_ROOT/NCCN/extracted/*.txt
-grep -n "trastuzumab" $KB_ROOT/ESMO/extracted/*.txt
+Use QMD to search across all extracted Markdown files:
+
+```python
+from scripts.retriever import QMDService
+
+with QMDService(kb_root=KB_ROOT) as svc:
+    results = svc.query("HER2 positive gastric cancer first-line treatment")
 ```
 
-- Use `Read` to retrieve content around matching lines (±20-50 lines)
+- QMD returns ranked results with BM25 + vector + LLM reranking scores
+- Use `Read` to retrieve additional context around high-scoring matches
 - Extract specific recommendations, evidence levels, sources
 
 ### Step 6: Cross-Guideline Synthesis, Generate Comparison Table
@@ -829,25 +813,25 @@ Aggregate all search results and generate structured output.
 - Include medical abbreviations (HER2, PD-L1, MSI-H, etc.)
 - Include drug/regimen names
 
-### grep Basic Principles
+### QMD Hybrid Retrieval Principles
 
-```bash
-# Basic search
-grep -n "keyword" $KB_ROOT/*/extracted/*.txt
+QMD combines three retrieval strategies:
+- **BM25**: Keyword-based lexical matching (good for exact terms like drug names)
+- **Vector search**: Semantic similarity via embedding model (good for paraphrased queries)
+- **LLM reranking**: Final relevance scoring
 
-# Multiple keywords (OR)
-grep -n -E "keyword1|keyword2" $KB_ROOT/NCCN/extracted/*.txt
-
-# Case-insensitive
-grep -n -i "keyword" $KB_ROOT/*/extracted/*.txt
+```python
+# The orchestrate command handles QMD retrieval automatically:
+python3 scripts/batch_pipeline.py orchestrate \
+  --patients Output/patients.json --kb-root $KB_ROOT
 ```
 
 ### Multi-Round Iteration Mechanism
 
-If first-round search results are unsatisfactory:
+If first-round retrieval results are unsatisfactory:
 
-1. **Expand keywords**: Add synonyms, related terms
-2. **Adjust scope**: Expand/shrink line range
+1. **Rephrase queries**: Use synonyms, different clinical terminology
+2. **Adjust scope**: Target specific organizations or disease aspects
 3. **Switch guidelines**: Try other relevant guidelines
 4. **Check chapters**: Re-read `data_structure.md`
 
@@ -857,12 +841,12 @@ If first-round search results are unsatisfactory:
 
 ## 7. File Type Strategies
 
-### Markdown/Text Files
+### Markdown Files
 
-For `extracted/*.txt`:
+For `extracted/*.md`:
 
-1. Use `grep` to locate keywords and line numbers
-2. Use `Read` to retrieve ±20-50 lines around matches
+1. Use QMD hybrid retrieval to find relevant passages
+2. Use `Read` to retrieve additional context around matches
 3. Extract key information
 
 ### PDF Files
@@ -870,8 +854,8 @@ For `extracted/*.txt`:
 **MANDATORY prerequisite**: Read `references/pdf_reading.md`
 
 Processing workflow:
-1. Confirm `extracted/*.txt` exists
-2. Search `extracted/*.txt` FIRST
+1. Confirm `extracted/*.md` exists (run `python3 scripts/extract_all.py` if not)
+2. Search `extracted/*.md` via QMD FIRST
 3. Reference original PDF only when precise page numbers needed
 
 ### DOCX Files
@@ -879,8 +863,8 @@ Processing workflow:
 **MANDATORY prerequisite**: Read `references/docx_reading.md`
 
 Processing workflow:
-1. Confirm `extracted/*.txt` exists
-2. Search `extracted/*.txt`
+1. Confirm `extracted/*.md` exists (run `python3 scripts/extract_all.py` if not)
+2. Search `extracted/*.md` via QMD
 3. Note table recommendation formats
 
 ---
@@ -913,9 +897,9 @@ Processing workflow:
 
 ### 信息来源
 
-- NCCN: $KB_ROOT/NCCN/extracted/[filename].txt 第 XX-YY 行
-- ESMO: $KB_ROOT/ESMO/extracted/[filename].txt 第 XX-YY 行
-- CSCO: $KB_ROOT/CSCO/extracted/[filename].txt 第 XX-YY 行
+- NCCN: $KB_ROOT/NCCN/extracted/[filename].md 第 XX-YY 行
+- ESMO: $KB_ROOT/ESMO/extracted/[filename].md 第 XX-YY 行
+- CSCO: $KB_ROOT/CSCO/extracted/[filename].md 第 XX-YY 行
 ```
 
 ---
@@ -1000,7 +984,6 @@ When adding guidelines from a new medical domain:
 - `references/input_format.md` - Batch input Excel format specification
 - `templates/data_structure_root.md` - Root index template
 - `templates/data_structure_org.md` - Organization index template
-- `templates/report_template.pptx` - PowerPoint report template with branded layouts
 
 ---
 
@@ -1013,14 +996,14 @@ When adding guidelines from a new medical domain:
 │  medical-guidelines-build  │     │  medical-guidelines-rag  │     │  medical-guidelines-batch     │
 │  (Build Phase)             │     │  (Query Phase)           │     │  (Batch Phase)               │
 │                            │     │                          │     │                              │
-│  PDF/DOCX → extracted/     │     │  Question → grep Search  │     │  Excel → Parse → RAG Loop    │
-│  + data_structure.md       │────▶│  → Comparison Table      │────▶│  → xlsx + docx + pptx        │
+│  PDF/DOCX → extracted/     │     │  Question → QMD Search   │     │  Excel → Parse → QMD Pre-    │
+│  + data_structure.md       │────▶│  → Comparison Table      │────▶│  Retrieval → Markdown Report │
 │                            │     │                          │     │                              │
 └────────────────────────────┘     └─────────────────────────┘     └──────────────────────────────┘
 ```
 
 This phase takes a batch of patients from an Excel file, auto-infers clinical questions for each,
-orchestrates RAG retrieval across ALL relevant guidelines, and generates 3 output deliverables.
+orchestrates QMD pre-retrieval across ALL relevant guidelines, and generates a Markdown report.
 
 ---
 
@@ -1103,7 +1086,7 @@ For each patient:
   3. For each org:
      a. Read $KB_ROOT/<org>/data_structure.md → target chapters
      b. Generate bilingual keywords (3-8 terms)
-     c. grep search → Read ±20-50 lines → extract recommendations
+     c. QMD retrieval → extract recommendations from pre-retrieved results
   4. Synthesize consensus + differences
   5. Report progress: "已完成 X/N 位患者检索"
 ```
@@ -1164,13 +1147,15 @@ python scripts/batch_pipeline.py generate --input Output/rag_results.json --form
 ### Step 1: Environment Check
 
 ```bash
-# Verify venv and dependencies
-.venv/bin/python3 -c "import openpyxl, docx, pptx; print('OK')"
+# Verify dependencies
+python3 -c "import openpyxl; print('OK')"
+# Verify QMD is available
+qmd --version
 # Create output directories
-mkdir -p Output/reports Output/batches
+mkdir -p Output/batches
 ```
 
-If dependencies are missing, install: `.venv/bin/pip install openpyxl python-docx python-pptx`
+If dependencies are missing, install: `pip install docling openpyxl` and `npm install -g @tobilu/qmd`
 
 ### Step 2: Parse Input
 
@@ -1193,8 +1178,8 @@ Read `Output/patients.json` to confirm patient count N.
 
 3. **所有输出路径以 orchestration_plan.json 为准**: 不自行决定文件存储位置。
 
-4. **禁止跳过 grep 命令**: orchestrate 生成的命令必须全部执行。
-   可以补充额外命令，但不得删减已有的。
+4. **禁止跳过预检索片段**: orchestrate 生成的预检索结果必须全部分析。
+   LLM 只分析预检索内容，不需要自行执行检索命令。
 
 </HARD_CONSTRAINT>
 
@@ -1215,27 +1200,19 @@ Read `Output/patients.json` to confirm patient count N.
 **所有批处理（无论患者数量）统一使用 orchestrate 驱动。**
 
 ```bash
-python scripts/batch_pipeline.py orchestrate \
+# Build QMD index first (if not already done)
+python3 scripts/batch_pipeline.py index --kb-root $KB_ROOT
+
+# Orchestrate: QMD pre-retrieval + batch prompt generation
+python3 scripts/batch_pipeline.py orchestrate \
   --patients Output/patients.json --kb-root $KB_ROOT \
-  --output-dir Output/batches --batch-size 5 \
-  --profile {full,slim}
+  --output-dir Output/batches --batch-size 5
 ```
 
-**Parameters**:
-- `--profile full` (default): Full retrieval mode with ~36 grep commands per patient, 5-layer JSON output
-- `--profile slim`: Small model mode (~12 commands per patient, flattened 2-layer JSON) for 27B-class models that struggle with complex prompts
-
-<IMPORTANT>
-`--profile slim` 是一个已实现的 CLI 参数，不是需要你定义或选择的概念。
-当用户说"slim 模式"、"小模型模式"、"用 27B 跑"时，直接在 orchestrate/verify-batch/validate 命令中添加 `--profile slim`。
-不要询问用户 slim 的含义，不要提供选项让用户选择 slim 的定义。
-slim 的所有行为已由 `batch_pipeline.py` 中的 `ProfileConfig` 控制，无需额外配置。
-</IMPORTANT>
-
 读取生成的 `Output/batches/orchestration_plan.json`，报告给用户：
-- 批次数量、待处理数、已完成数（checkpoint）
+- 批次数量、待处理数
 - 覆盖的指南组织
-- grep 命令总数
+- 检索查询总数和检索结果总数
 
 **对 pending 批次逐一执行（严格顺序）：**
 
@@ -1243,13 +1220,12 @@ slim 的所有行为已由 `batch_pipeline.py` 中的 `ProfileConfig` 控制，�
 
 1. 读取 `batch_NNN_prompt.md`
    — 注意开头的 `<CONTEXT_RESET>` 指令，清除前批上下文
-2. 按 prompt 中的 grep 命令逐条执行（不得跳过），每条命令标记为 `CMD-P{n}-{org}-{seq}`
-3. 每条 grep 执行后，记录 `cmd_id`、`match_count`、`first_match_snippet`（≥30字）到 `execution_log`
-4. 可补充额外 grep（基于已有结果中的线索），补充命令不需要 CMD-ID
-5. 提取推荐、证据等级、来源信息
-6. 生成共识/差异分析
-7. 写入 `rag_batch_NNN.json`（必须包含 `execution_log` 和 `execution_summary`）
-8. 报告进度: "已完成第 NNN 批（X/M 批），共 Y/N 位患者"
+2. 分析 prompt 中的预检索结果（QMD 已自动检索，LLM 只需分析）
+3. 从预检索片段中提取推荐、证据等级、来源信息
+4. 记录引用来源到 `execution_log`
+5. 生成共识/差异分析
+6. 写入 `rag_batch_NNN.json`
+7. 报告进度: "已完成第 NNN 批（X/M 批），共 Y/N 位患者"
 
 完成所有批次后，先验证执行证据再合并：
 
@@ -1273,11 +1249,11 @@ verify-batch 全部 PASS 后，执行 `orchestration_plan.json` 中 `next_steps`
 When processing batches, the following rules are **mandatory** to prevent quality degradation:
 
 1. **No cross-batch references**: Never reference, quote, or summarize results from previous batches when processing a new batch. Each batch starts fresh.
-2. **No shorthand**: Never use phrases like "与前面患者类似", "同上", "参考前述" — every patient gets independently inferred clinical questions and independently executed grep searches.
+2. **No shorthand**: Never use phrases like "与前面患者类似", "同上", "参考前述" — every patient gets independently inferred clinical questions and independently analyzed retrieval results.
 3. **Re-read the root index**: Read `$KB_ROOT/data_structure.md` at the start of **every** batch, not just the first one.
 4. **Write then release**: After writing `rag_batch_NNN.json`, that batch's data is no longer needed for subsequent batches. Do not carry it forward in reasoning.
 5. **Equal depth**: Later batches must receive the same search depth (number of keywords, number of guidelines checked, context lines read) as earlier batches.
-6. **Record execution evidence**: Every grep command (CMD-*) must have its match_count and first_match_snippet recorded in the execution_log of the corresponding guideline_results entry.
+6. **Record citation sources**: Every recommendation must cite the specific pre-retrieved passage it was derived from.
 
 </HARD_CONSTRAINT>
 
@@ -1311,9 +1287,7 @@ Confirm all output files exist and report completion:
 | 患者总数 | N |
 | 处理模式 | 直接模式 / 分批模式（M 批） |
 | 成功检索 | K |
-| 汇总表 | Output/批量推荐汇总表.xlsx ✓ |
-| 推荐意见书 | Output/reports/ (K 份) ✓ |
-| 幻灯片 | Output/批量推荐幻灯片.pptx ✓ |
+| 推荐报告 | Output/批量指南推荐报告_YYYYMMDD.md ✓ |
 | 质量验证 | ✓ 通过 / ⚠ N 个警告 |
 ```
 
@@ -1342,13 +1316,12 @@ Report on resume: "检测到已完成 X/M 批（Y 位患者），从第 Z 批继
 - **Never write custom scripts** to replace batch_pipeline.py
 - **Never process batches in parallel**
 - **Never store output** outside orchestration_plan.json 指定的目录
-- **Never skip any grep command** from the prompt
-- **Never skip any org's** search results
-- **Never ignore patient clinical features** in search
-- **Never omit execution_log** from guideline_results output
-- **Never omit execution_summary** from patient results
-- **Never fabricate first_match_snippet** — it must be the actual text from grep output
+- **Never skip any pre-retrieved passage** from the prompt
+- **Never skip any org's** retrieval results
+- **Never ignore patient clinical features** in analysis
+- **Never omit citation sources** from guideline_results output
+- **Never fabricate citations** — they must reference actual pre-retrieved content
 
 ---
 
-*Last Updated: 2026-03-27*
+*Last Updated: 2026-04-08*

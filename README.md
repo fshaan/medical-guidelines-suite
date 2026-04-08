@@ -1,4 +1,4 @@
-# Medical Guidelines Suite v2.5.0
+# Medical Guidelines Suite v3.0.0
 
 Clinical guidelines knowledge base builder, retrieval engine, and batch patient report generator.
 
@@ -81,32 +81,7 @@ python3 scripts/batch_pipeline.py generate --input Output/rag_results.json --for
 
 Or simply ask Claude: "对 patients.xlsx 中的患者，批量检索指南推荐"
 
-The `orchestrate` command replaces manual splitting — it automatically scans the knowledge base, extracts 9 clinical dimensions from each patient, and generates self-contained batch prompts with pre-built grep commands. Supports checkpoint recovery for interrupted processing.
-
-### Small Model Mode (--profile slim)
-
-For local models (Qwen 27B etc.) that struggle with complex prompts:
-
-```bash
-python3 scripts/batch_pipeline.py orchestrate \
-  --patients Output/patients.json \
-  --output-dir Output/batches \
-  --batch-size 5 \
-  --profile slim
-
-python3 scripts/batch_pipeline.py verify-batch --input-dir Output/batches/ --profile slim
-python3 scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
-python3 scripts/batch_pipeline.py validate --input Output/rag_results.json --profile slim
-```
-
-**Agent 自然语言调用：** 在 Claude Code / OpenClaw 等 agent 界面中，可以用自然语言触发 slim 模式：
-
-| 说法 | 效果 |
-|------|------|
-| "用 slim 模式批量检索" | `--profile slim` |
-| "小模型模式处理患者" | `--profile slim` |
-| "用 27B 本地模型跑批量" | agent 推断使用 slim |
-| 不指定 | 默认 `--profile full` |
+The `orchestrate` command replaces manual splitting — it automatically scans the knowledge base, uses QMD hybrid retrieval (BM25 + vector + LLM reranking) to pre-retrieve relevant guideline content for each patient, and generates self-contained batch prompts with pre-retrieved evidence.
 
 ## Output Deliverables
 
@@ -136,7 +111,7 @@ medical-guidelines-suite/
 │   ├── retriever.py            # QMD service wrapper (hybrid BM25 + vector + reranking)
 │   ├── extract_all.py          # Batch extraction (Docling → extracted/*.md)
 │   └── batch_pipeline.py       # Batch patient pipeline (9 subcommands incl. index, verify-batch)
-├── tests/                      # pytest test suite (148 tests)
+├── tests/                      # pytest test suite (134 tests)
 ├── docs/
 │   ├── v2.3-anti-laziness-spec.md  # v2.3 execution evidence spec
 │   ├── v2.2-fix-plan.md       # v2.2 design spec
@@ -155,7 +130,7 @@ medical-guidelines-suite/
 
 ## Acknowledgments
 
-This project was inspired by [ConardLi/rag-skill](https://github.com/ConardLi/rag-skill), which demonstrated the hierarchical index + progressive retrieval pattern for local knowledge bases using Claude Code Skills. We adopted and extended its core architectural ideas — `data_structure.md` layered indexing, grep-based search, and the "learn before process" constraint — into the medical guidelines domain, adding cross-guideline comparison, batch patient processing, and Markdown report generation.
+This project was inspired by [ConardLi/rag-skill](https://github.com/ConardLi/rag-skill), which demonstrated the hierarchical index + progressive retrieval pattern for local knowledge bases using Claude Code Skills. We adopted and extended its core architectural ideas — `data_structure.md` layered indexing and the "learn before process" constraint — into the medical guidelines domain, adding QMD hybrid retrieval (BM25 + vector + LLM reranking), cross-guideline comparison, batch patient processing, and Markdown report generation.
 
 ## License
 
