@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import json
 import argparse
-from batch_pipeline import ProfileConfig, PROFILE_FULL, PROFILE_SLIM, get_profile, generate_grep_commands, filter_orgs_by_disease, generate_batch_prompt, _is_flat_format, _aggregate_flat_results, _generate_consensus, cmd_validate
+from batch_pipeline import ProfileConfig, PROFILE_FULL, PROFILE_SLIM, get_profile, filter_orgs_by_disease, generate_batch_prompt, _is_flat_format, _aggregate_flat_results, _generate_consensus, cmd_validate
 
 
 class TestProfileConfig:
@@ -85,39 +85,10 @@ class TestGrepGenerationSlim:
             },
         }
 
-    def test_slim_produces_grouped_commands(self):
+    def test_slim_profile_has_dimension_groups(self):
         config = get_profile("slim")
-        features = self._make_features()
-        kb = self._make_kb_profile()
-        cmds = generate_grep_commands(features, kb, Path("/kb"), config=config)
-        # 4 groups x 3 orgs = 12
-        assert len(cmds) == 12
-
-    def test_slim_group_merges_keywords(self):
-        config = get_profile("slim")
-        features = self._make_features()
-        kb = self._make_kb_profile()
-        cmds = generate_grep_commands(features, kb, Path("/kb"), config=config)
-        group1_cmds = [c for c in cmds if c["dimension"] == "diagnosis_staging_metastasis"]
-        assert len(group1_cmds) == 3  # one per org
-
-    def test_slim_skips_empty_groups(self):
-        config = get_profile("slim")
-        features = self._make_features()
-        features["comorbidity_keywords"] = []
-        features["special_keywords"] = []
-        kb = self._make_kb_profile()
-        cmds = generate_grep_commands(features, kb, Path("/kb"), config=config)
-        # Group 4 empty → 3 groups x 3 orgs = 9
-        assert len(cmds) == 9
-
-    def test_full_profile_unchanged(self):
-        """config=None produces original behavior."""
-        features = self._make_features()
-        kb = self._make_kb_profile()
-        cmds_default = generate_grep_commands(features, kb, Path("/kb"))
-        cmds_explicit = generate_grep_commands(features, kb, Path("/kb"), config=None)
-        assert len(cmds_default) == len(cmds_explicit)
+        assert config.dimension_groups is not None
+        assert len(config.dimension_groups) == 4
 
 
 class TestSlimPrompt:
@@ -130,9 +101,9 @@ class TestSlimPrompt:
                 "diagnosis_keywords": ["胃癌"],
                 "all_keywords": ["胃癌"],
             },
-            "grep_commands": [
-                {"org": "NCCN", "dimension": "diagnosis_staging_metastasis",
-                 "command": 'grep -n -i --include="*.md" -r "胃癌" "/kb/NCCN/extracted"'},
+            "retrieval_results": [
+                {"content": "Gastric cancer treatment.", "path": "NCCN/extracted/NCCN_Gastric.md",
+                 "score": 0.85, "context": "NCCN gastric guidelines"},
             ],
         }]
 
@@ -143,34 +114,29 @@ class TestSlimPrompt:
             "root_index_content": "test index",
         }
 
-    def test_slim_prompt_contains_micro_checkpoints(self):
+    def test_slim_prompt_contains_retrieval_results(self):
         config = get_profile("slim")
         prompt = generate_batch_prompt(
             self._make_batch(), self._make_kb_profile(), "/kb", 1, 1, config=config,
         )
-        assert "自检" in prompt
+        assert "Gastric cancer treatment" in prompt
+        assert "retrieval_sources" in prompt
 
-    def test_slim_prompt_uses_flat_json_template(self):
+    def test_slim_prompt_no_grep(self):
         config = get_profile("slim")
         prompt = generate_batch_prompt(
             self._make_batch(), self._make_kb_profile(), "/kb", 1, 1, config=config,
         )
-        assert '"guideline":' in prompt
-        assert "guideline_results" not in prompt
-
-    def test_slim_prompt_no_execution_log(self):
-        config = get_profile("slim")
-        prompt = generate_batch_prompt(
-            self._make_batch(), self._make_kb_profile(), "/kb", 1, 1, config=config,
-        )
+        assert "grep" not in prompt.lower()
+        assert "CMD-P" not in prompt
         assert "execution_log" not in prompt
-        assert "execution_summary" not in prompt
 
-    def test_full_prompt_unchanged(self):
+    def test_full_prompt_same_structure(self):
         prompt = generate_batch_prompt(
             self._make_batch(), self._make_kb_profile(), "/kb", 1, 1,
         )
-        assert "execution_log" in prompt
+        assert "retrieval_sources" in prompt
+        assert "grep" not in prompt.lower()
 
 
 class TestFlatFormatDetection:
