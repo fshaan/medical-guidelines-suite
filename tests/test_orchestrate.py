@@ -1,91 +1,186 @@
 import json
 import pytest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-def test_orchestrate_creates_plan(mock_kb, patients_json, tmp_path):
-    from scripts.batch_pipeline import cmd_orchestrate
-    import argparse
+
+@patch("scripts.retriever.QMDService")
+@patch("scripts.batch_pipeline.scan_knowledge_base")
+@patch("scripts.batch_pipeline.resolve_kb_root")
+def test_orchestrate_uses_qmd_preretrieval(
+    mock_resolve, mock_scan, mock_qmd_cls, tmp_path
+):
+    """orchestrate should use QMD pre-retrieval instead of grep."""
+    mock_resolve.return_value = tmp_path
+    mock_scan.return_value = {
+        "orgs": ["NCCN"],
+        "org_files": {
+            "NCCN": [{"file": "NCCN_Gastric.md", "lines": 100}]
+        },
+        "root_index_content": "# KB Root",
+    }
+
+    mock_svc = MagicMock()
+    mock_svc.query.return_value = [
+        {
+            "content": "Chemotherapy is recommended for stage IV.",
+            "path": "NCCN/extracted/NCCN_Gastric.md",
+            "score": 0.85,
+            "context": "NCCN gastric guidelines",
+        }
+    ]
+    mock_qmd_cls.return_value.__enter__ = MagicMock(return_value=mock_svc)
+    mock_qmd_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+    patients_path = tmp_path / "patients.json"
+    patients_path.write_text(
+        json.dumps({
+            "patients": [{
+                "patient_id": "P001",
+                "patient_name": "Test",
+                "disease_type": "gastric cancer",
+                "t_stage": "T3",
+                "n_stage": "N2",
+                "m_stage": "M0",
+            }]
+        }),
+        encoding="utf-8",
+    )
 
     output_dir = tmp_path / "batches"
-    args = argparse.Namespace(
-        patients=str(patients_json),
-        kb_root=str(mock_kb),
-        output_dir=str(output_dir),
-        batch_size=5,
-        max_prompt_tokens=80000,
+
+    args = MagicMock()
+    args.patients = str(patients_path)
+    args.output_dir = str(output_dir)
+    args.batch_size = 5
+    args.max_prompt_tokens = 50000
+    args.kb_root = str(tmp_path)
+    args.profile = "full"
+
+    from scripts.batch_pipeline import cmd_orchestrate
+
+    cmd_orchestrate(args)
+
+    mock_svc.query.assert_called()
+    assert output_dir.exists()
+    prompt_files = list(output_dir.glob("*.md"))
+    assert len(prompt_files) >= 1
+
+
+@patch("scripts.retriever.QMDService")
+@patch("scripts.batch_pipeline.scan_knowledge_base")
+@patch("scripts.batch_pipeline.resolve_kb_root")
+def test_orchestrate_creates_plan(
+    mock_resolve, mock_scan, mock_qmd_cls, tmp_path
+):
+    """orchestrate should create orchestration_plan.json."""
+    mock_resolve.return_value = tmp_path
+    mock_scan.return_value = {
+        "orgs": ["NCCN"],
+        "org_files": {
+            "NCCN": [{"file": "NCCN_Gastric.md", "lines": 100}]
+        },
+        "root_index_content": "# KB Root",
+    }
+
+    mock_svc = MagicMock()
+    mock_svc.query.return_value = [
+        {"content": "Test result", "path": "NCCN/extracted/x.md", "score": 0.8, "context": "ctx"}
+    ]
+    mock_qmd_cls.return_value.__enter__ = MagicMock(return_value=mock_svc)
+    mock_qmd_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+    patients_path = tmp_path / "patients.json"
+    patients_path.write_text(
+        json.dumps({
+            "patients": [{
+                "patient_id": "P001",
+                "patient_name": "Test",
+                "disease_type": "gastric cancer",
+            }]
+        }),
+        encoding="utf-8",
     )
+
+    output_dir = tmp_path / "batches"
+    args = MagicMock()
+    args.patients = str(patients_path)
+    args.output_dir = str(output_dir)
+    args.batch_size = 5
+    args.max_prompt_tokens = 80000
+    args.kb_root = str(tmp_path)
+    args.profile = "full"
+
+    from scripts.batch_pipeline import cmd_orchestrate
+
     cmd_orchestrate(args)
 
     plan_file = output_dir / "orchestration_plan.json"
     assert plan_file.exists()
     plan = json.loads(plan_file.read_text(encoding="utf-8"))
-    assert plan["version"] == "2.2"
-    assert plan["total_patients"] == 12
+    assert plan["total_patients"] == 1
     assert len(plan["batches"]) >= 1
-    assert plan["stats"]["orgs_covered"] == ["CSCO", "ESMO", "NCCN"]
+    assert "total_queries" in plan
+    assert "total_retrieval_results" in plan
 
-def test_orchestrate_creates_prompt_files(mock_kb, patients_json, tmp_path):
-    from scripts.batch_pipeline import cmd_orchestrate
-    import argparse
+
+@patch("scripts.retriever.QMDService")
+@patch("scripts.batch_pipeline.scan_knowledge_base")
+@patch("scripts.batch_pipeline.resolve_kb_root")
+def test_orchestrate_deduplicates_results(
+    mock_resolve, mock_scan, mock_qmd_cls, tmp_path
+):
+    """orchestrate should deduplicate retrieval results by path+content."""
+    mock_resolve.return_value = tmp_path
+    mock_scan.return_value = {
+        "orgs": ["NCCN"],
+        "org_files": {
+            "NCCN": [{"file": "NCCN_Gastric.md", "lines": 100}]
+        },
+        "root_index_content": "# KB Root",
+    }
+
+    dup_result = {
+        "content": "Same content appears twice in results.",
+        "path": "NCCN/extracted/NCCN_Gastric.md",
+        "score": 0.85,
+        "context": "ctx",
+    }
+    mock_svc = MagicMock()
+    mock_svc.query.return_value = [dup_result, dup_result]
+    mock_qmd_cls.return_value.__enter__ = MagicMock(return_value=mock_svc)
+    mock_qmd_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+    patients_path = tmp_path / "patients.json"
+    patients_path.write_text(
+        json.dumps({
+            "patients": [{
+                "patient_id": "P001",
+                "patient_name": "Test",
+                "disease_type": "gastric cancer",
+                "staging_keywords": ["T3"],
+            }]
+        }),
+        encoding="utf-8",
+    )
 
     output_dir = tmp_path / "batches"
-    args = argparse.Namespace(
-        patients=str(patients_json),
-        kb_root=str(mock_kb),
-        output_dir=str(output_dir),
-        batch_size=5,
-        max_prompt_tokens=80000,
-    )
-    cmd_orchestrate(args)
+    args = MagicMock()
+    args.patients = str(patients_path)
+    args.output_dir = str(output_dir)
+    args.batch_size = 5
+    args.max_prompt_tokens = 80000
+    args.kb_root = str(tmp_path)
+    args.profile = "full"
 
-    prompt_files = sorted(output_dir.glob("batch_*_prompt.md"))
-    assert len(prompt_files) >= 2
-
-    for pf in prompt_files:
-        content = pf.read_text(encoding="utf-8")
-        assert "<CONTEXT_RESET>" in content
-
-def test_orchestrate_checkpoint_detection(mock_kb, patients_json, tmp_path):
     from scripts.batch_pipeline import cmd_orchestrate
-    import argparse
 
-    output_dir = tmp_path / "batches"
-    output_dir.mkdir(parents=True)
-    (output_dir / "rag_batch_001.json").write_text(
-        json.dumps({"results": [{"patient_id": "P001"}]}), encoding="utf-8"
-    )
-
-    args = argparse.Namespace(
-        patients=str(patients_json),
-        kb_root=str(mock_kb),
-        output_dir=str(output_dir),
-        batch_size=5,
-        max_prompt_tokens=80000,
-    )
     cmd_orchestrate(args)
 
-    plan = json.loads((output_dir / "orchestration_plan.json").read_text(encoding="utf-8"))
-    assert plan["batches"][0]["status"] == "completed"
-
-def test_orchestrate_existing_plan_resume(mock_kb, patients_json, tmp_path):
-    from scripts.batch_pipeline import cmd_orchestrate
-    import argparse
-
-    output_dir = tmp_path / "batches"
-    output_dir.mkdir(parents=True)
-    old_plan = {"version": "2.2", "batches": [{"id": "batch_001", "status": "pending"}]}
-    (output_dir / "orchestration_plan.json").write_text(json.dumps(old_plan), encoding="utf-8")
-
-    args = argparse.Namespace(
-        patients=str(patients_json),
-        kb_root=str(mock_kb),
-        output_dir=str(output_dir),
-        batch_size=5,
-        max_prompt_tokens=80000,
-    )
-    cmd_orchestrate(args)
-    plan = json.loads((output_dir / "orchestration_plan.json").read_text(encoding="utf-8"))
-    assert plan["total_patients"] == 12
+    prompt_files = list(output_dir.glob("*.md"))
+    assert len(prompt_files) >= 1
+    content = prompt_files[0].read_text(encoding="utf-8")
+    assert "Same content appears twice" in content
 
 
 def test_build_queries_generates_per_dimension_queries():

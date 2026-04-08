@@ -975,51 +975,64 @@ def generate_batch_prompt(
 
 
 def cmd_orchestrate(args):
-    """orchestrate 子命令入口 — 自动编排批处理流程"""
+    """orchestrate subcommand -- batch processing with QMD pre-retrieval."""
+    from scripts.retriever import QMDService
+
     kb_root = resolve_kb_root(getattr(args, "kb_root", None))
-    print(f"知识库路径: {kb_root}")
+    print(f"Knowledge base: {kb_root}")
 
     kb_profile = scan_knowledge_base(kb_root)
     if not kb_profile["orgs"]:
-        print("知识库为空（无有效 org 目录）", file=sys.stderr)
+        print("Knowledge base is empty", file=sys.stderr)
         sys.exit(1)
 
     config = get_profile(getattr(args, "profile", "full"))
-    if config.name == "slim":
-        print(f"  Profile: slim（小模型优化模式）")
 
     patients_path = Path(args.patients).resolve()
     if not patients_path.exists():
-        print(f"患者文件不存在: {patients_path}", file=sys.stderr)
+        print(f"Patients file not found: {patients_path}", file=sys.stderr)
         sys.exit(1)
     patients_data = json.loads(patients_path.read_text(encoding="utf-8"))
     patients = patients_data.get("patients", [])
     if not patients:
-        print("患者列表为空", file=sys.stderr)
+        print("Patient list is empty", file=sys.stderr)
         sys.exit(1)
 
     enriched_patients = []
-    total_grep = 0
-    total_kw = 0
-    for p in patients:
-        features = extract_patient_features(p)
-        if config.org_filter_by_disease:
-            disease = p.get("disease_type", "")
-            filtered_profile = {
-                **kb_profile,
-                "orgs": filter_orgs_by_disease(kb_profile, disease),
+    total_results = 0
+    total_queries = 0
+
+    with QMDService() as qmd:
+        for p in patients:
+            features = extract_patient_features(p)
+            queries = build_queries(p, features)
+            total_queries += len(queries)
+
+            retrieval_results = []
+            for q in queries:
+                hits = qmd.query(q, top_k=10, min_score=0.3)
+                retrieval_results.extend(hits)
+
+            seen = set()
+            unique_results = []
+            for hit in retrieval_results:
+                key = (hit.get("path", ""), hit.get("content", "")[:100])
+                if key not in seen:
+                    seen.add(key)
+                    unique_results.append(hit)
+
+            total_results += len(unique_results)
+            enriched = {
+                **p,
+                "features": features,
+                "retrieval_results": unique_results,
             }
-            grep_cmds = generate_grep_commands(
-                features, filtered_profile, kb_root, config=config
-            )
-        else:
-            grep_cmds = generate_grep_commands(
-                features, kb_profile, kb_root, config=config
-            )
-        enriched = {**p, "features": features, "grep_commands": grep_cmds}
-        enriched_patients.append(enriched)
-        total_grep += len(grep_cmds)
-        total_kw += len(features.get("all_keywords", []))
+            enriched_patients.append(enriched)
+
+    print(
+        f"Pre-retrieval done: {len(patients)} patients, "
+        f"{total_queries} queries, {total_results} results\n"
+    )
 
     batch_size = args.batch_size
     max_tokens = args.max_prompt_tokens
@@ -1028,17 +1041,13 @@ def cmd_orchestrate(args):
     final_batches = []
     for batch in batches:
         prompt = generate_batch_prompt(
-            batch,
-            kb_profile,
-            str(kb_root),
-            len(final_batches) + 1,
-            len(batches),
-            config=config,
+            batch, kb_profile, str(kb_root),
+            len(final_batches) + 1, len(batches), config=config,
         )
         tokens = estimate_tokens(prompt)
         if tokens > max_tokens and len(batch) > 1:
             sub_batches = _auto_split_batch(
-                batch, kb_profile, str(kb_root), max_tokens, config=config
+                batch, kb_profile, str(kb_root), max_tokens, config=config,
             )
             final_batches.extend(sub_batches)
         else:
@@ -1047,100 +1056,42 @@ def cmd_orchestrate(args):
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    existing_plan_path = output_dir / "orchestration_plan.json"
-    if existing_plan_path.exists():
-        try:
-            old_plan = json.loads(existing_plan_path.read_text(encoding="utf-8"))
-            old_batches = old_plan.get("batches", [])
-            pending = [b for b in old_batches if b.get("status") == "pending"]
-            completed = [b for b in old_batches if b.get("status") == "completed"]
-            if pending:
-                print(
-                    f"  ℹ 检测到已有计划: {len(completed)} 批已完成, {len(pending)} 批待处理。进入续跑模式。"
-                )
-            elif completed:
-                print(
-                    f"  ℹ 检测到已有计划且全部完成 ({len(completed)} 批)。将重新生成。"
-                )
-                print(f"     如需保留旧结果，请指定不同的 --output-dir。")
-        except (json.JSONDecodeError, KeyError):
-            print(f"  ⚠ 已有 orchestration_plan.json 格式异常，将重新生成。")
-
-    plan_batches = []
-    for bi, batch in enumerate(final_batches, 1):
-        batch_id = f"batch_{bi:03d}"
-        prompt_file = output_dir / f"{batch_id}_prompt.md"
-        output_file = output_dir / f"rag_{batch_id}.json"
-
-        status = "pending"
-        if output_file.exists():
-            try:
-                check = json.loads(output_file.read_text(encoding="utf-8"))
-                if check.get("results"):
-                    status = "completed"
-                    print(f"  ✓ {batch_id} 已完成 (checkpoint)")
-            except (json.JSONDecodeError, KeyError):
-                pass
-
-        if status == "pending":
-            prompt = generate_batch_prompt(
-                batch,
-                kb_profile,
-                str(kb_root),
-                bi,
-                len(final_batches),
-                output_file=str(output_file),
-                config=config,
-            )
-            prompt_file.write_text(prompt, encoding="utf-8")
-
-        plan_batches.append(
-            {
-                "id": batch_id,
-                "prompt_file": str(prompt_file),
-                "output_file": str(output_file),
-                "patients": [p.get("patient_id") for p in batch],
-                "status": status,
-            }
+    for i, batch in enumerate(final_batches, 1):
+        output_file = output_dir / f"rag_batch_{i:03d}.json"
+        prompt = generate_batch_prompt(
+            batch, kb_profile, str(kb_root),
+            i, len(final_batches),
+            output_file=str(output_file), config=config,
         )
+        prompt_file = output_dir / f"batch_{i:03d}_prompt.md"
+        prompt_file.write_text(prompt, encoding="utf-8")
+        print(f"  batch {i:03d}: {len(batch)} patients -> {prompt_file.name}")
 
     plan = {
-        "version": "2.2",
-        "created_at": datetime.now().isoformat(),
-        "kb_root": str(kb_root),
+        "total_patients": len(patients),
+        "total_batches": len(final_batches),
+        "total_queries": total_queries,
+        "total_retrieval_results": total_results,
         "kb_profile": {
             "orgs": kb_profile["orgs"],
-            "org_files": kb_profile["org_files"],
+            "kb_root": str(kb_root),
         },
-        "total_patients": len(patients),
-        "batch_size": batch_size,
-        "batches": plan_batches,
-        "next_steps": [
-            f"python scripts/batch_pipeline.py merge --input-dir {output_dir} --output {output_dir.parent / 'rag_results.json'}",
-            f"python scripts/batch_pipeline.py validate --input {output_dir.parent / 'rag_results.json'} --patients {patients_path}",
-            f"python scripts/batch_pipeline.py generate --input {output_dir.parent / 'rag_results.json'} --format md",
+        "batches": [
+            {
+                "batch_id": f"batch_{i:03d}",
+                "patient_count": len(b),
+                "prompt_file": f"batch_{i:03d}_prompt.md",
+                "output_file": f"rag_batch_{i:03d}.json",
+                "status": "pending",
+            }
+            for i, b in enumerate(final_batches, 1)
         ],
-        "stats": {
-            "total_grep_commands": total_grep,
-            "orgs_covered": sorted(kb_profile["orgs"]),
-            "avg_keywords_per_patient": round(total_kw / len(patients), 1)
-            if patients
-            else 0,
-        },
     }
     plan_path = output_dir / "orchestration_plan.json"
     plan_path.write_text(
         json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-
-    pending = sum(1 for b in plan_batches if b["status"] == "pending")
-    completed = sum(1 for b in plan_batches if b["status"] == "completed")
-    print(f"\n编排完成:")
-    print(f"  患者: {len(patients)}")
-    print(f"  批次: {len(final_batches)} (待处理: {pending}, 已完成: {completed})")
-    print(f"  grep 命令总数: {total_grep}")
-    print(f"  组织覆盖: {', '.join(sorted(kb_profile['orgs']))}")
-    print(f"  计划文件: {plan_path}")
+    print(f"\nOrchestration complete: {plan_path}")
 
 
 def _auto_split_batch(
