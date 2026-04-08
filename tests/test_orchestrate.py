@@ -55,7 +55,6 @@ def test_orchestrate_uses_qmd_preretrieval(
     args.batch_size = 5
     args.max_prompt_tokens = 50000
     args.kb_root = str(tmp_path)
-    args.profile = "full"
 
     from scripts.batch_pipeline import cmd_orchestrate
 
@@ -109,7 +108,6 @@ def test_orchestrate_creates_plan(
     args.batch_size = 5
     args.max_prompt_tokens = 80000
     args.kb_root = str(tmp_path)
-    args.profile = "full"
 
     from scripts.batch_pipeline import cmd_orchestrate
 
@@ -171,7 +169,6 @@ def test_orchestrate_deduplicates_results(
     args.batch_size = 5
     args.max_prompt_tokens = 80000
     args.kb_root = str(tmp_path)
-    args.profile = "full"
 
     from scripts.batch_pipeline import cmd_orchestrate
 

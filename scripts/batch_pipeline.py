@@ -20,7 +20,6 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
@@ -28,43 +27,8 @@ from pathlib import Path
 # ─── Profile 配置 ────────────────────────────────────────────────────────────
 
 
-SLIM_DIMENSION_GROUPS = [
-    ["diagnosis_keywords", "staging_keywords", "metastasis_keywords"],
-    ["molecular_keywords", "marker_keywords"],
-    ["treatment_keywords", "event_keywords"],
-    ["comorbidity_keywords", "special_keywords"],
-]
-
-
-@dataclass
-class ProfileConfig:
-    name: str = "full"
-    dimension_groups: list | None = None
-    min_rec_length: int = 50
-    skip_anti_laziness: bool = False
-    skip_snippet_verify: bool = False
-    micro_checkpoints: bool = False
-    flat_json: bool = False
-    org_filter_by_disease: bool = False
-
-
-PROFILE_FULL = ProfileConfig()
-
-PROFILE_SLIM = ProfileConfig(
-    name="slim",
-    dimension_groups=SLIM_DIMENSION_GROUPS,
-    min_rec_length=20,
-    skip_anti_laziness=True,
-    skip_snippet_verify=True,
-    micro_checkpoints=True,
-    flat_json=True,
-    org_filter_by_disease=True,
-)
-
-
-def get_profile(name: str) -> ProfileConfig:
-    """获取命名 profile 配置。"""
-    return {"full": PROFILE_FULL, "slim": PROFILE_SLIM}[name]
+MIN_CITATION_COVERAGE = 0.5
+MIN_REC_LENGTH = 50
 
 
 # ─── parse 子命令 ─────────────────────────────────────────────────────────────
@@ -334,8 +298,8 @@ def scan_knowledge_base(kb_root: Path) -> dict:
         if not extracted_dir.is_dir():
             print(f"  ⚠ {org}/ 无 extracted/ 子目录，跳过", file=sys.stderr)
             continue
-        txt_files = sorted(extracted_dir.glob("*.md"))
-        if not txt_files:
+        md_files = sorted(extracted_dir.glob("*.md"))
+        if not md_files:
             print(f"  ⚠ {org}/extracted/ 无 .md 文件，跳过", file=sys.stderr)
             continue
 
@@ -346,7 +310,7 @@ def scan_knowledge_base(kb_root: Path) -> dict:
                 "path": str(f),
                 "lines": sum(1 for _ in f.open(encoding="utf-8")),
             }
-            for f in txt_files
+            for f in md_files
         ]
 
         org_ds = org_dir / "data_structure.md"
@@ -739,7 +703,6 @@ def generate_batch_prompt(
     batch_idx: int,
     total_batches: int,
     output_file: str = "",
-    config: "ProfileConfig | None" = None,
 ) -> str:
     """Generate self-contained batch prompt (based on pre-retrieval results)."""
     lines = []
@@ -822,11 +785,13 @@ def generate_batch_prompt(
             lines.append(f"#### Citation Requirement [Patient {pi}: {pname}]")
             lines.append(
                 f"Cite chunk IDs (e.g. R{pi:03d}-01) in retrieval_sources. "
-                f"Coverage >= 50% (at least {min_citations} chunks)."
+                f"Coverage >= {MIN_CITATION_COVERAGE:.0%} (at least {min_citations} chunks)."
             )
         else:
             lines.append("\n#### Pre-retrieved Results\n")
-            lines.append("No pre-retrieved results. Provide general guidance based on clinical info.\n")
+            lines.append("No pre-retrieved results available.")
+            lines.append('You MUST record: "该指南未检索到与本患者相关的内容" for each guideline.')
+            lines.append("Do NOT fabricate recommendations without retrieved evidence.\n")
 
         lines.append("")
 
@@ -888,8 +853,6 @@ def cmd_orchestrate(args):
         print("Knowledge base is empty", file=sys.stderr)
         sys.exit(1)
 
-    config = get_profile(getattr(args, "profile", "full"))
-
     patients_path = Path(args.patients).resolve()
     if not patients_path.exists():
         print(f"Patients file not found: {patients_path}", file=sys.stderr)
@@ -918,7 +881,7 @@ def cmd_orchestrate(args):
             seen = set()
             unique_results = []
             for hit in retrieval_results:
-                key = (hit.get("path", ""), hit.get("content", "")[:100])
+                key = (hit.get("path", ""), hash(hit.get("content", "")))
                 if key not in seen:
                     seen.add(key)
                     unique_results.append(hit)
@@ -944,12 +907,12 @@ def cmd_orchestrate(args):
     for batch in batches:
         prompt = generate_batch_prompt(
             batch, kb_profile, str(kb_root),
-            len(final_batches) + 1, len(batches), config=config,
+            len(final_batches) + 1, len(batches),
         )
         tokens = estimate_tokens(prompt)
         if tokens > max_tokens and len(batch) > 1:
             sub_batches = _auto_split_batch(
-                batch, kb_profile, str(kb_root), max_tokens, config=config,
+                batch, kb_profile, str(kb_root), max_tokens,
             )
             final_batches.extend(sub_batches)
         else:
@@ -963,7 +926,7 @@ def cmd_orchestrate(args):
         prompt = generate_batch_prompt(
             batch, kb_profile, str(kb_root),
             i, len(final_batches),
-            output_file=str(output_file), config=config,
+            output_file=str(output_file),
         )
         prompt_file = output_dir / f"batch_{i:03d}_prompt.md"
         prompt_file.write_text(prompt, encoding="utf-8")
@@ -1001,7 +964,6 @@ def _auto_split_batch(
     kb_profile: dict,
     kb_root: str,
     max_tokens: int,
-    config: "ProfileConfig | None" = None,
 ) -> list[list[dict]]:
     """D3: 递归拆分超限批次"""
     if len(batch) <= 1:
@@ -1012,10 +974,10 @@ def _auto_split_batch(
     result = []
 
     for sub in (left, right):
-        prompt = generate_batch_prompt(sub, kb_profile, kb_root, 1, 999, config=config)
+        prompt = generate_batch_prompt(sub, kb_profile, kb_root, 1, 999)
         if estimate_tokens(prompt) > max_tokens and len(sub) > 1:
             result.extend(
-                _auto_split_batch(sub, kb_profile, kb_root, max_tokens, config=config)
+                _auto_split_batch(sub, kb_profile, kb_root, max_tokens)
             )
         else:
             result.append(sub)
@@ -1431,7 +1393,6 @@ def _verify_batch_results(
     prompt_text: str,
     batch_data: dict,
     kb_root: str = "",
-    config: "ProfileConfig | None" = None,
 ) -> tuple:
     """Verify batch results quality.
 
@@ -1448,12 +1409,11 @@ def _verify_batch_results(
 
         # V3: Citation coverage
         citation_coverage = result.get("citation_coverage", None)
-        if citation_coverage is not None and citation_coverage < 0.5:
-            if not (config and config.skip_anti_laziness):
-                warnings.append(
-                    f"[{pid}] Low citation coverage "
-                    f"({citation_coverage:.0%}, require >= 50%)"
-                )
+        if citation_coverage is not None and citation_coverage < MIN_CITATION_COVERAGE:
+            warnings.append(
+                f"[{pid}] Low citation coverage "
+                f"({citation_coverage:.0%}, require >= {MIN_CITATION_COVERAGE:.0%})"
+            )
 
         for q in result.get("clinical_questions", []):
             for gr in q.get("guideline_results", []):
@@ -1485,7 +1445,6 @@ def _verify_batch_results(
 
 def cmd_verify_batch(args):
     """verify-batch 子命令入口 — 验证批次执行证据的真实性"""
-    config = get_profile(getattr(args, "profile", "full"))
     input_dir = Path(args.input_dir).resolve()
     kb_root = ""
     if hasattr(args, "kb_root") and args.kb_root:
@@ -1523,8 +1482,7 @@ def cmd_verify_batch(args):
             continue
 
         errors, warns = _verify_batch_results(
-            prompt_text, batch_data, kb_root, config=config
-        )
+            prompt_text, batch_data, kb_root)
 
         if errors:
             total_fail += 1
@@ -1552,7 +1510,6 @@ def cmd_verify_batch(args):
 
 def cmd_validate(args):
     """validate 子命令入口 — 检查 rag_results.json 质量与完整性"""
-    config = get_profile(getattr(args, "profile", "full"))
     input_path = Path(args.input).resolve()
     if not input_path.exists():
         print(f"文件不存在: {input_path}", file=sys.stderr)
@@ -1605,7 +1562,7 @@ def cmd_validate(args):
             for g in grs:
                 rec = g.get("recommendation", "")
                 total_len += len(rec)
-                if len(rec) < config.min_rec_length:
+                if len(rec) < MIN_REC_LENGTH:
                     warnings.append(
                         f"[{pid}] Q{qi} {g.get('guideline', '')} 推荐过短 ({len(rec)}字)"
                     )
@@ -1629,7 +1586,7 @@ def cmd_validate(args):
 
         # citation_coverage check
         cov = r.get("citation_coverage")
-        if cov is not None and cov < 0.5 and not config.skip_anti_laziness:
+        if cov is not None and cov < MIN_CITATION_COVERAGE:
             warnings.append(
                 f"[{pid}] 引用覆盖率过低 ({cov:.0%}, 要求 >= 50%)"
             )
@@ -1637,7 +1594,7 @@ def cmd_validate(args):
         rec_lengths.append((pid, total_len))
 
     # 跨患者一致性：检测质量下降
-    if not config.skip_anti_laziness and len(rec_lengths) >= 3:
+    if len(rec_lengths) >= 3:
         lengths = [l for _, l in rec_lengths if l > 0]
         if lengths:
             avg_len = sum(lengths) / len(lengths)
@@ -1647,14 +1604,13 @@ def cmd_validate(args):
                         f"[{pid}] 推荐总长度异常偏短 ({length}字 vs 平均 {avg_len:.0f}字)"
                     )
 
-    if not config.skip_anti_laziness:
-        # 跨批次相似度检测 (D9)
-        cross_warnings = _check_cross_batch_similarity(results)
-        warnings.extend(cross_warnings)
+    # 跨批次相似度检测 (D9)
+    cross_warnings = _check_cross_batch_similarity(results)
+    warnings.extend(cross_warnings)
 
-        # 批次深度衰减检测 (L4)
-        depth_warnings = _check_batch_depth_decay(results)
-        warnings.extend(depth_warnings)
+    # 批次深度衰减检测 (L4)
+    depth_warnings = _check_batch_depth_decay(results)
+    warnings.extend(depth_warnings)
 
     # 组织覆盖率检测 (§1.8)
     kb_profile_path = getattr(args, "kb_profile", None)
@@ -1986,12 +1942,6 @@ def main():
         default=80000,
         help="单个 prompt 最大 token 数 (默认 80000)",
     )
-    p_orch.add_argument(
-        "--profile",
-        choices=["full", "slim"],
-        default="full",
-        help="处理模式 (默认 full，slim 适用于小模型)",
-    )
 
     # merge
     p_merge = sub.add_parser("merge", help="合并批次结果为 rag_results.json")
@@ -2014,12 +1964,6 @@ def main():
     p_validate.add_argument(
         "--kb-profile", help="orchestration_plan.json 路径（可选，用于组织覆盖率检查）"
     )
-    p_validate.add_argument(
-        "--profile",
-        choices=["full", "slim"],
-        default="full",
-        help="验证模式 (默认 full)",
-    )
 
     # index
     p_index = sub.add_parser("index", help="Build QMD index and inject Context metadata")
@@ -2031,12 +1975,6 @@ def main():
     p_verify.add_argument("--input-dir", required=True, help="批次结果所在目录")
     p_verify.add_argument(
         "--kb-root", default=None, help="知识库根路径（可选，启用 snippet 校验）"
-    )
-    p_verify.add_argument(
-        "--profile",
-        choices=["full", "slim"],
-        default="full",
-        help="验证模式 (默认 full)",
     )
 
     # generate

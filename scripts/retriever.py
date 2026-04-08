@@ -37,9 +37,17 @@ class QMDService:
         self.process = subprocess.Popen(
             ["qmd", "mcp", "--http", "--port", str(self.port)],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
         )
-        self._wait_for_ready(timeout=30)
+        try:
+            self._wait_for_ready(timeout=30)
+        except Exception:
+            # Kill leaked process if startup fails — __exit__ won't run
+            if self.process and self.process.poll() is None:
+                self.process.kill()
+                self.process.wait(timeout=3)
+            self.process = None
+            raise
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -118,13 +126,8 @@ class QMDService:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
-                stderr = (
-                    self.process.stderr.read().decode()
-                    if self.process.stderr
-                    else ""
-                )
                 raise QMDStartupError(
-                    f"QMD exited during startup: {stderr[:200]}"
+                    f"QMD exited during startup (exit code: {self.process.returncode})"
                 )
             try:
                 resp = requests.post(
@@ -149,9 +152,20 @@ class QMDService:
     @staticmethod
     def _parse_mcp_response(data: dict) -> list[dict]:
         """Parse MCP tools/call response into list of result dicts."""
+        if "error" in data:
+            err = data["error"]
+            raise RuntimeError(
+                f"QMD error {err.get('code', '?')}: {err.get('message', '')}"
+            )
         result = data.get("result", {})
         content_blocks = result.get("content", [])
         for block in content_blocks:
             if block.get("type") == "text":
-                return json.loads(block["text"])
+                try:
+                    return json.loads(block["text"])
+                except json.JSONDecodeError as e:
+                    raise RuntimeError(
+                        f"QMD returned invalid JSON: {e}. "
+                        f"Raw: {block['text'][:200]}"
+                    ) from e
         return []

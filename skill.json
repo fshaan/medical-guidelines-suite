@@ -1,6 +1,6 @@
 {
   "name": "medical-guidelines-suite",
-  "version": "2.4.0",
+  "version": "3.0.0",
   "description": "Medical Clinical Guidelines Knowledge Base Suite: Build, Query, and Batch Process. Builds structured knowledge bases from PDF/DOCX guidelines, provides intelligent cross-guideline retrieval, and generates batch patient recommendation reports (Excel + Word + PowerPoint).",
   "author": "fshaan",
   "license": "CC-BY-NC-SA-4.0",
@@ -34,7 +34,7 @@
       {"path": "templates/data_structure_org.md", "required": false, "description": "Template for organization-specific index"},
       {"path": "scripts/extract_all.py", "required": false, "description": "Docling-based batch extraction (PDF/DOCX to Markdown)"},
       {"path": "scripts/retriever.py", "required": false, "description": "QMDService context manager for hybrid retrieval"},
-      {"path": "scripts/batch_pipeline.py", "required": true, "description": "Batch patient pipeline: parse, split, orchestrate, merge, validate, verify-batch, generate (8 subcommands)"},
+      {"path": "scripts/batch_pipeline.py", "required": true, "description": "Batch patient pipeline: parse, split, orchestrate, index, merge, validate, verify-batch, generate (9 subcommands)"},
       {"path": "examples/sample_queries.md", "required": false, "description": "Example clinical questions demonstrating skill usage"}
     ]
   },
