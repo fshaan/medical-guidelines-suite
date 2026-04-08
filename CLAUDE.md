@@ -6,18 +6,18 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Project Overview
 
-**Medical Guidelines RAG** is a clinical guidelines retrieval system based on Agent Skills. It uses **hierarchical keyword search** (NOT vector database) to retrieve content from multiple international/domestic medical guidelines.
+**Medical Guidelines RAG** is a clinical guidelines retrieval system based on Agent Skills. It uses **QMD hybrid retrieval (BM25 + vector + LLM reranking)** to retrieve content from multiple international/domestic medical guidelines.
 
 **Core Use Cases**:
 1. **Single-patient retrieval**: Clinical question → cross-guideline comparison table
-2. **Batch patient processing**: Patient Excel → orchestrate → per-patient guideline reports (xlsx + docx + pptx)
+2. **Batch patient processing**: Patient Excel → orchestrate → per-patient guideline reports (Markdown)
 
 **Technical Features**:
-- No vector database — grep + Agent hierarchical navigation
-- Pre-extracted plain text — searches `extracted/*.txt`
+- QMD hybrid retrieval — BM25 + vector search + LLM reranking
+- Docling-extracted Markdown — searches `extracted/*.md` via QMD
 - Cross-guideline evidence level mapping
 - Domain-agnostic design — adapts to any medical specialty
-- **v2.2 orchestrate** — deterministic batch processing with pre-generated grep commands
+- **v2.2 orchestrate** — deterministic batch processing with QMD pre-retrieval
 
 ---
 
@@ -53,10 +53,9 @@ medical-guidelines-suite/
 ├── skill.json                  # Package metadata
 ├── README.md / CHANGELOG.md
 ├── scripts/
-│   ├── batch_pipeline.py       # 8 subcommands: parse/split/orchestrate/merge/validate/verify-batch/generate
-│   ├── extract_pdf.py          # PDF text extraction
-│   ├── extract_docx.py         # DOCX text extraction
-│   └── extract_all.py          # Batch extraction entry point
+│   ├── batch_pipeline.py       # 9 subcommands: parse/split/orchestrate/index/merge/validate/verify-batch/generate
+│   ├── retriever.py            # QMD service wrapper (hybrid BM25 + vector + reranking)
+│   └── extract_all.py          # Batch extraction entry point (Docling → .md)
 ├── references/
 │   ├── pdf_reading.md / pdf_extraction.md
 │   ├── docx_reading.md / docx_extraction.md
@@ -76,21 +75,28 @@ medical-guidelines-suite/
 
 ## Common Commands
 
-### Text Extraction
+### Text Extraction (Docling)
 
 ```bash
-python scripts/extract_all.py          # Incremental extraction
-python scripts/extract_all.py --force  # Force re-extraction
+python3 scripts/extract_all.py          # Incremental extraction (Docling → extracted/*.md)
+python3 scripts/extract_all.py --force  # Force re-extraction
+```
+
+### QMD Index
+
+```bash
+# Build QMD search index over extracted Markdown files
+python3 scripts/batch_pipeline.py index --kb-root $MEDICAL_GUIDELINES_DIR
 ```
 
 ### Batch Patient Processing (v2.2 orchestrate)
 
 ```bash
 # Parse input Excel
-python scripts/batch_pipeline.py parse --input Input/2026-3-25.xlsx --output Output/patients.json
+python3 scripts/batch_pipeline.py parse --input Input/2026-3-25.xlsx --output Output/patients.json
 
-# Orchestrate: auto-scan KB, extract features, generate batch prompts
-python scripts/batch_pipeline.py orchestrate \
+# Orchestrate: auto-scan KB, QMD pre-retrieval, generate batch prompts
+python3 scripts/batch_pipeline.py orchestrate \
   --patients Output/patients.json \
   --output-dir Output/batches \
   --batch-size 5
@@ -98,17 +104,17 @@ python scripts/batch_pipeline.py orchestrate \
 # (LLM executes each batch prompt → Output/batches/rag_batch_*.json)
 
 # Verify execution evidence + merge + validate + generate
-python scripts/batch_pipeline.py verify-batch --input-dir Output/batches/ --kb-root $MEDICAL_GUIDELINES_DIR
-python scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
-python scripts/batch_pipeline.py validate --input Output/rag_results.json --patients Output/patients.json
-python scripts/batch_pipeline.py generate --input Output/rag_results.json --format md
+python3 scripts/batch_pipeline.py verify-batch --input-dir Output/batches/ --kb-root $MEDICAL_GUIDELINES_DIR
+python3 scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
+python3 scripts/batch_pipeline.py validate --input Output/rag_results.json --patients Output/patients.json
+python3 scripts/batch_pipeline.py generate --input Output/rag_results.json --format md
 ```
 
 ### Testing
 
 ```bash
-python -m pytest tests/ -v          # Run all tests (148)
-python -m pytest tests/ -v -k scan  # Run specific tests
+python3 -m pytest tests/ -v          # Run all tests (148)
+python3 -m pytest tests/ -v -k scan  # Run specific tests
 ```
 
 ---
@@ -126,13 +132,25 @@ python -m pytest tests/ -v -k scan  # Run specific tests
 
 ## Dependencies
 
-| Tool | Purpose |
-|------|---------|
-| `pdftotext` (poppler) | PDF text extraction |
-| `openpyxl` | Excel reading (input parsing) |
+| Tool | Install | Purpose |
+|------|---------|---------|
+| `docling` | `pip install docling` | PDF/DOCX to Markdown extraction |
+| `qmd` | `npm install -g @tobilu/qmd` | Hybrid BM25 + vector retrieval service |
+| `openpyxl` | `pip install openpyxl` | Excel reading (input parsing) |
 
-**NOT required**: Embedding models, vector databases, additional LLM APIs
+**NOT required**: pdftotext/poppler, python-docx, separate embedding model APIs
 
 ---
 
-*Last Updated: 2026-04-01*
+## Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MEDICAL_GUIDELINES_DIR` | — | Knowledge base root path (required) |
+| `QMD_EMBED_MODEL` | `Qwen3-Embedding` | Embedding model for QMD vector search |
+| `QMD_PORT` | `8181` | Port for QMD service |
+| `QMD_AVAILABLE` | — | Set to `1` to enable integration tests gated on QMD |
+
+---
+
+*Last Updated: 2026-04-08*

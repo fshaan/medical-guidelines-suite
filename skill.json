@@ -43,9 +43,8 @@
     "emoji": "🏥",
     "category": "medical",
     "requires": {
-      "bins": ["grep", "python3"],
-      "optional_bins": ["pdftotext"],
-      "pip": ["openpyxl"]
+      "bins": ["qmd", "python3"],
+      "pip": ["docling", "openpyxl"]
     },
     "triggers": [
       "指南推荐",

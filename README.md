@@ -18,8 +18,10 @@ git clone https://github.com/fshaan/medical-guidelines-suite \
   ~/.claude/skills/medical-guidelines-suite
 
 # Install Python dependencies
-pip install openpyxl pdfplumber
-# or: brew install poppler  (for pdftotext)
+pip install docling openpyxl
+
+# Install QMD hybrid retrieval service
+npm install -g @tobilu/qmd
 ```
 
 ### Option C: Project-Local Installation
@@ -43,8 +45,11 @@ Place guideline PDFs/DOCXs in a directory and run:
 mkdir -p guidelines/NCCN/extracted
 cp NCCN_Gastric_2026.pdf guidelines/NCCN/
 
-# Extract text
-python scripts/extract_all.py --force
+# Extract to Markdown (Docling)
+python3 scripts/extract_all.py --force
+
+# Build QMD search index
+python3 scripts/batch_pipeline.py index --kb-root ./guidelines
 ```
 
 Then ask Claude: "构建知识库索引"
@@ -57,21 +62,21 @@ Ask Claude: "HER2阳性晚期胃癌一线治疗，各指南推荐什么？"
 
 ```bash
 # Parse patient Excel
-python scripts/batch_pipeline.py parse --input patients.xlsx --output Output/patients.json
+python3 scripts/batch_pipeline.py parse --input patients.xlsx --output Output/patients.json
 
-# Orchestrate: auto-scan KB, extract features, generate grep commands + batch prompts
-python scripts/batch_pipeline.py orchestrate \
+# Orchestrate: auto-scan KB, QMD pre-retrieval, generate batch prompts
+python3 scripts/batch_pipeline.py orchestrate \
   --patients Output/patients.json --kb-root ./guidelines --batch-size 5
 
 # (Claude executes each batch prompt → Output/batches/rag_batch_*.json)
 
 # Verify execution evidence + merge batch results + validate quality
-python scripts/batch_pipeline.py verify-batch --input-dir Output/batches/ --kb-root ./guidelines
-python scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
-python scripts/batch_pipeline.py validate --input Output/rag_results.json --patients Output/patients.json
+python3 scripts/batch_pipeline.py verify-batch --input-dir Output/batches/ --kb-root ./guidelines
+python3 scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
+python3 scripts/batch_pipeline.py validate --input Output/rag_results.json --patients Output/patients.json
 
 # Generate reports
-python scripts/batch_pipeline.py generate --input Output/rag_results.json --format md
+python3 scripts/batch_pipeline.py generate --input Output/rag_results.json --format md
 ```
 
 Or simply ask Claude: "对 patients.xlsx 中的患者，批量检索指南推荐"
@@ -83,15 +88,15 @@ The `orchestrate` command replaces manual splitting — it automatically scans t
 For local models (Qwen 27B etc.) that struggle with complex prompts:
 
 ```bash
-python scripts/batch_pipeline.py orchestrate \
+python3 scripts/batch_pipeline.py orchestrate \
   --patients Output/patients.json \
   --output-dir Output/batches \
   --batch-size 5 \
   --profile slim
 
-python scripts/batch_pipeline.py verify-batch --input-dir Output/batches/ --profile slim
-python scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
-python scripts/batch_pipeline.py validate --input Output/rag_results.json --profile slim
+python3 scripts/batch_pipeline.py verify-batch --input-dir Output/batches/ --profile slim
+python3 scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
+python3 scripts/batch_pipeline.py validate --input Output/rag_results.json --profile slim
 ```
 
 **Agent 自然语言调用：** 在 Claude Code / OpenClaw 等 agent 界面中，可以用自然语言触发 slim 模式：
@@ -128,10 +133,9 @@ medical-guidelines-suite/
 │   ├── data_structure_root.md  # Root index template
 │   └── data_structure_org.md   # Organization index template
 ├── scripts/
-│   ├── extract_pdf.py          # PDF text extraction
-│   ├── extract_docx.py         # DOCX text extraction
-│   ├── extract_all.py          # Batch extraction
-│   └── batch_pipeline.py       # Batch patient pipeline (8 subcommands incl. verify-batch)
+│   ├── retriever.py            # QMD service wrapper (hybrid BM25 + vector + reranking)
+│   ├── extract_all.py          # Batch extraction (Docling → extracted/*.md)
+│   └── batch_pipeline.py       # Batch patient pipeline (9 subcommands incl. index, verify-batch)
 ├── tests/                      # pytest test suite (148 tests)
 ├── docs/
 │   ├── v2.3-anti-laziness-spec.md  # v2.3 execution evidence spec
@@ -145,8 +149,9 @@ medical-guidelines-suite/
 ## Requirements
 
 - Python 3.9+
-- `openpyxl` — Excel input parsing
-- `pdftotext` (poppler) — PDF text extraction (optional, for build phase)
+- `docling` — PDF/DOCX to Markdown extraction (`pip install docling`)
+- `openpyxl` — Excel input parsing (`pip install openpyxl`)
+- `qmd` — Hybrid BM25 + vector retrieval service (`npm install -g @tobilu/qmd`)
 
 ## Acknowledgments
 
