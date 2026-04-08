@@ -778,7 +778,7 @@ def generate_batch_prompt(
 
         lines.append("**Clinical info:**")
         for k, v in patient.items():
-            if k in ("features", "retrieval_results", "grep_commands"):
+            if k in ("features", "retrieval_results"):
                 continue
             if v is None:
                 continue
