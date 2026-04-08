@@ -2,6 +2,11 @@ import json
 import pytest
 from pathlib import Path
 
+def pytest_configure(config):
+    """Register custom markers."""
+    config.addinivalue_line("markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')")
+
+
 @pytest.fixture
 def sample_patients():
     """12 位模拟患者（覆盖 structured + narrative 格式）"""
