@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from scripts.extraction.pdf_extractor import extract_pdf, resolve_mineru_output
+from scripts.extraction.docx_extractor import extract_docx
 
 
 class TestResolveMineruOutput:
@@ -69,3 +70,34 @@ class TestExtractPdf:
 
         with pytest.raises(RuntimeError, match="MinerU failed"):
             extract_pdf(src, out_dir)
+
+
+class TestExtractDocx:
+    @patch("scripts.extraction.docx_extractor.DocumentConverter")
+    def test_creates_md_output(self, mock_cls, tmp_path):
+        mock_doc = MagicMock()
+        mock_doc.document.export_to_markdown.return_value = (
+            "# 胃癌指南\n\n## 第一部分\n\n内容\n"
+        )
+        mock_converter = MagicMock()
+        mock_converter.convert.return_value = mock_doc
+        mock_cls.return_value = mock_converter
+
+        src = tmp_path / "guide.docx"
+        src.write_bytes(b"PK dummy docx")
+        out_dir = tmp_path / "output"
+
+        result = extract_docx(src, out_dir)
+
+        assert result["md_path"].exists()
+        content = result["md_path"].read_text(encoding="utf-8")
+        assert "# 胃癌指南" in content
+        mock_doc.document.export_to_markdown.assert_called_once_with(
+            image_mode="referenced"
+        )
+
+    def test_unsupported_format_raises(self, tmp_path):
+        src = tmp_path / "file.pptx"
+        src.write_bytes(b"dummy")
+        with pytest.raises(ValueError, match="Unsupported"):
+            extract_docx(src, tmp_path / "out")
