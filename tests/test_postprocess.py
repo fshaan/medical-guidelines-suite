@@ -1,7 +1,7 @@
-"""Tests for MinerU LaTeX postprocessing."""
+"""Tests for MinerU LaTeX postprocessing and inline term recovery."""
 
 import pytest
-from scripts.extraction.postprocess import postprocess_latex
+from scripts.extraction.postprocess import postprocess_latex, recover_inline_terms
 
 
 class TestPostprocessLatex:
@@ -51,3 +51,35 @@ class TestPostprocessLatex:
         inp = "高危（$\\textcircled{1}$）\n低危（$\\textcircled{2}$）"
         exp = "高危（①）\n低危（②）"
         assert postprocess_latex(inp) == exp
+
+
+class TestRecoverInlineTerms:
+    def test_fills_empty_parens(self):
+        """Empty Chinese parens filled from PyMuPDF text."""
+        md_text = "据全球最新数据（ ），胃癌（ ， ）发病率居恶性肿瘤第5位"
+        pymupdf_text = "据全球最新数据（Globocan 2022），胃癌（Gastric Cancer，GC）发病率居恶性肿瘤第5位"
+
+        result = recover_inline_terms(md_text, pymupdf_text)
+        assert "Globocan 2022" in result
+        assert "Gastric Cancer" in result
+
+    def test_no_empty_parens_noop(self):
+        """No empty parens → text unchanged."""
+        text = "正常文本（有内容）不需要补回"
+        result = recover_inline_terms(text, text)
+        assert result == text
+
+    def test_pymupdf_also_empty_skip(self):
+        """If PyMuPDF also has empty parens, skip."""
+        md_text = "数据（ ）很重要"
+        pymupdf_text = "数据（ ）很重要"
+        result = recover_inline_terms(md_text, pymupdf_text)
+        assert result == md_text
+
+    def test_partial_match(self):
+        """Fill only matching empty parens, leave others."""
+        md_text = "第一个（ ）和第二个（ ）"
+        pymupdf_text = "第一个（ABC）和第二个（ ）"
+        result = recover_inline_terms(md_text, pymupdf_text)
+        assert "ABC" in result
+        assert "（ ）" in result  # second one stays empty
