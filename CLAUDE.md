@@ -55,7 +55,9 @@ medical-guidelines-suite/
 ├── scripts/
 │   ├── batch_pipeline.py       # 9 subcommands: parse/split/orchestrate/index/merge/validate/verify-batch/generate
 │   ├── retriever.py            # QMD service wrapper (hybrid BM25 + vector + reranking)
-│   └── extract_all.py          # Batch extraction entry point (Docling → .md)
+│   ├── extract_all.py          # Batch extraction entry point (Docling → .md, legacy)
+│   ├── extract_guidelines.py   # v2 extraction pipeline (MinerU + Docling + VLM)
+│   └── extraction/             # Extraction modules (pdf_extractor, docx_extractor, postprocess, vlm_describer)
 ├── references/
 │   ├── pdf_reading.md / pdf_extraction.md
 │   ├── docx_reading.md / docx_extraction.md
@@ -64,7 +66,7 @@ medical-guidelines-suite/
 ├── templates/
 │   ├── data_structure_root.md  # Root index template
 │   └── data_structure_org.md   # Organization index template
-├── tests/                      # pytest suite (134 tests)
+├── tests/                      # pytest suite (169 tests)
 ├── docs/                       # Design documents
 │   └── solutions/              # Documented solutions (bugs, patterns), YAML frontmatter searchable by module/tags
 ├── Input/                      # User input files (xlsx, patients.json)
@@ -75,11 +77,27 @@ medical-guidelines-suite/
 
 ## Common Commands
 
-### Text Extraction (Docling)
+### Text Extraction (Docling, legacy)
 
 ```bash
 python3 scripts/extract_all.py          # Incremental extraction (Docling → extracted/*.md)
 python3 scripts/extract_all.py --force  # Force re-extraction
+```
+
+### Text Extraction v2 (MinerU + Docling + VLM)
+
+```bash
+# 提取单个 PDF（MinerU）或 DOCX（Docling）
+python3 scripts/extract_guidelines.py extract --input <file> --output-dir <dir>
+
+# 批量提取整个知识库
+python3 scripts/extract_guidelines.py extract-all --kb-root $MEDICAL_GUIDELINES_DIR
+
+# VLM 图片描述（需要 LM Studio 运行）
+python3 scripts/extract_guidelines.py describe-images --input-dir <images_dir>
+
+# 全流程（提取 + VLM，VLM 不可用时仍完成提取）
+python3 scripts/extract_guidelines.py pipeline --kb-root $MEDICAL_GUIDELINES_DIR
 ```
 
 ### QMD Index
@@ -134,11 +152,14 @@ python3 -m pytest tests/ -v -k scan  # Run specific tests
 
 | Tool | Install | Purpose |
 |------|---------|---------|
-| `docling` | `pip install docling` | PDF/DOCX to Markdown extraction |
+| `mineru` | `uv tool install mineru` | PDF to Markdown extraction (v2, recommended) |
+| `docling` | `pip install docling` | DOCX to Markdown extraction |
 | `qmd` | `npm install -g @tobilu/qmd` | Hybrid BM25 + vector retrieval service |
 | `openpyxl` | `pip install openpyxl` | Excel reading (input parsing) |
 
 **NOT required**: pdftotext/poppler, python-docx, separate embedding model APIs
+
+**Optional**: LM Studio (local VLM for image descriptions in extract_guidelines.py)
 
 ---
 
