@@ -101,3 +101,53 @@ class TestExtractDocx:
         src.write_bytes(b"dummy")
         with pytest.raises(ValueError, match="Unsupported"):
             extract_docx(src, tmp_path / "out")
+
+
+# --- Gated integration tests ---
+
+@pytest.mark.skipif(
+    not os.environ.get("MINERU_AVAILABLE"),
+    reason="MINERU_AVAILABLE not set",
+)
+class TestMineruIntegration:
+    def test_extract_small_pdf(self, tmp_path):
+        """Integration test: extract ESMO PDF with real MinerU."""
+        src = Path("MD_output_test/ESMO PAN-Asia gastric cancer 2024.pdf")
+        if not src.exists():
+            pytest.skip("Test PDF not found")
+
+        result = extract_pdf(src, tmp_path)
+        content = result["md_path"].read_text(encoding="utf-8")
+
+        # Verify key quality improvements
+        assert "/uniFB01" not in content, "Unicode ligature should be fixed"
+        assert result["image_count"] > 0, "Should extract images"
+
+
+@pytest.mark.skipif(
+    not os.environ.get("LM_STUDIO_AVAILABLE"),
+    reason="LM_STUDIO_AVAILABLE not set",
+)
+class TestVlmIntegration:
+    def test_classify_flowchart(self):
+        """Integration test: classify an extracted image."""
+        from scripts.extraction.vlm_describer import classify_image
+
+        img_dir = Path(
+            "MD_output_test/output_mineru/"
+            "NCCN_GastricCancer_2026.V2_EN/hybrid_auto/images/"
+        )
+        if not img_dir.exists():
+            pytest.skip("Test images not found")
+
+        images = sorted(img_dir.glob("*.jpg"))
+        if not images:
+            pytest.skip("No images")
+
+        DEFAULT_MODEL = (
+            "gemma-4-31b-it-mystery-fine-tune-heretic-"
+            "uncensored-thinking-instruct"
+        )
+        result = classify_image(images[0], DEFAULT_MODEL)
+        valid_types = ("流程图", "数据图表", "医学示意图", "表格图片", "装饰性图片")
+        assert result in valid_types, f"Unexpected classification: {result}"
