@@ -2,10 +2,31 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
 from scripts.extraction.postprocess import postprocess_latex
+
+# Candidate locations for the mineru binary when it is installed in a venv
+# and wrapped as a shell function (not visible to subprocess via PATH).
+_MINERU_CANDIDATES = [
+    Path.home() / ".venvs" / "mineru" / "bin" / "mineru",
+    Path.home() / ".local" / "bin" / "mineru",
+]
+
+
+def _resolve_mineru_cmd(cmd: str) -> str:
+    """Return the first usable mineru binary path.
+
+    Subprocess cannot execute shell functions, so we check venv candidates
+    before falling back to the caller-supplied command string.
+    """
+    for candidate in _MINERU_CANDIDATES:
+        if candidate.exists():
+            return str(candidate)
+    found = shutil.which(cmd)
+    return found if found else cmd
 
 
 def resolve_mineru_output(output_dir: Path, stem: str) -> tuple:
@@ -49,8 +70,9 @@ def extract_pdf(
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = source_path.stem
 
+    resolved_cmd = _resolve_mineru_cmd(mineru_cmd)
     result = subprocess.run(
-        [mineru_cmd, "-p", str(source_path), "-o", str(output_dir)],
+        [resolved_cmd, "-p", str(source_path), "-o", str(output_dir)],
         capture_output=True,
         text=True,
     )
