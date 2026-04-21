@@ -73,11 +73,23 @@ def cmd_extract_all(args):
     if not source_dir.exists():
         source_dir = kb_root  # fallback: scan root
 
+    # When scanning kb_root, skip our own output subdirs so MinerU's
+    # intermediate *_layout.pdf / *_origin.pdf files aren't re-ingested.
+    excluded_roots = {extracted_dir, images_root, kb_root / "archive"}
+
+    def _under_excluded(path: Path) -> bool:
+        return any(
+            excluded in path.parents or path == excluded
+            for excluded in excluded_roots
+        )
+
     sources = sorted(
-        itertools.chain(
+        p
+        for p in itertools.chain(
             source_dir.rglob("*.[pP][dD][fF]"),
             source_dir.rglob("*.[dD][oO][cC][xX]"),
         )
+        if not _under_excluded(p)
     )
 
     if not sources:
