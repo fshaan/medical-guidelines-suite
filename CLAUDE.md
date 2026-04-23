@@ -167,10 +167,14 @@ QMD manages its own GGUF models. Configure local paths in `~/.config/qmd/index.y
 
 ```yaml
 models:
-  embed:    ~/.cache/qmd/models/hf_ggml-org_embeddinggemma-300M-Q8_0.gguf
-  rerank:   /path/to/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf
-  generate: ~/.cache/qmd/models/hf_tobil_qmd-query-expansion-1.7B-q4_k_m.gguf
+  embed:    /Users/f.sh/.cache/qmd/models/hf_ggml-org_embeddinggemma-300M-Q8_0.gguf
+  rerank:   /Users/f.sh/.lmstudio/models/ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf
+  generate: /Users/f.sh/.cache/qmd/models/hf_tobil_qmd-query-expansion-1.7B-q4_k_m.gguf
 ```
+
+**重要限制**：`qmd embed`（索引构建）硬编码使用 embeddinggemma-300M（768维），
+无视 `config.models.embed`。`config.models.embed` 只影响查询时向量编码，
+因此 `embed` 字段必须与索引实际使用的模型一致（300M），否则查询时维度不匹配崩溃。
 
 On first run, `embed` and `generate` are auto-downloaded (~313 MB + 1.2 GB). On macOS with
 Apple Silicon, a Metal shader compile warning appears but does not affect results.
