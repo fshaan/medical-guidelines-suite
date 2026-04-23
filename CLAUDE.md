@@ -161,6 +161,20 @@ python3 -m pytest tests/ -v -k scan  # Run specific tests
 
 **Optional**: LM Studio (local VLM for image descriptions in extract_guidelines.py)
 
+### QMD Model Configuration
+
+QMD manages its own GGUF models. Configure local paths in `~/.config/qmd/index.yml`:
+
+```yaml
+models:
+  embed:    ~/.cache/qmd/models/hf_ggml-org_embeddinggemma-300M-Q8_0.gguf
+  rerank:   /path/to/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf
+  generate: ~/.cache/qmd/models/hf_tobil_qmd-query-expansion-1.7B-q4_k_m.gguf
+```
+
+On first run, `embed` and `generate` are auto-downloaded (~313 MB + 1.2 GB). On macOS with
+Apple Silicon, a Metal shader compile warning appears but does not affect results.
+
 ---
 
 ## Environment Variables
