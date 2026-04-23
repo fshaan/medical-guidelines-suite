@@ -1170,7 +1170,9 @@ def cmd_index(args):
     embed_cmd = ["qmd", "embed"]
     if force:
         embed_cmd.append("-f")
-    subprocess.run(embed_cmd, check=True)
+    result = subprocess.run(embed_cmd)
+    if result.returncode not in (0, 134):  # 134 = Metal GPU exit crash (macOS, benign)
+        raise subprocess.CalledProcessError(result.returncode, embed_cmd)
 
     print("\nInjecting contexts...")
     for org_name, org_dir, md_files in orgs_found:
