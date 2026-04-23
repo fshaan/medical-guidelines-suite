@@ -168,10 +168,9 @@ python3 -m pytest tests/ -v -k scan  # Run specific tests
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `MEDICAL_GUIDELINES_DIR` | — | Knowledge base root path (required) |
-| `QMD_EMBED_MODEL` | `Qwen3-Embedding` | Embedding model for QMD vector search |
 | `QMD_PORT` | `8181` | Port for QMD service |
 | `QMD_AVAILABLE` | — | Set to `1` to enable integration tests gated on QMD |
 
 ---
 
-*Last Updated: 2026-04-08*
+*Last Updated: 2026-04-23*

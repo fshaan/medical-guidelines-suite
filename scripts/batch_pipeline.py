@@ -1156,15 +1156,21 @@ def cmd_index(args):
         ]
         if force:
             cmd.append("--force")
-        print(f"  collection: {org_name}")
-        subprocess.run(cmd, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            if "already exists" in result.stderr and not force:
+                print(f"  collection: {org_name} (already exists, skipping)")
+            else:
+                print(result.stderr, file=sys.stderr)
+                raise subprocess.CalledProcessError(result.returncode, cmd)
+        else:
+            print(f"  collection: {org_name}")
 
-    print("\nGenerating embeddings (Qwen3-Embedding)...")
-    embed_env = {**os.environ, "QMD_EMBED_MODEL": "Qwen3-Embedding"}
+    print("\nGenerating embeddings...")
     embed_cmd = ["qmd", "embed"]
     if force:
         embed_cmd.append("-f")
-    subprocess.run(embed_cmd, check=True, env=embed_env)
+    subprocess.run(embed_cmd, check=True)
 
     print("\nInjecting contexts...")
     for org_name, org_dir, md_files in orgs_found:
@@ -1181,11 +1187,22 @@ def cmd_index(args):
         )
         print(f"  context: {org_name} = {org_desc}")
 
-        for md_file in md_files:
-            file_desc = f"{org_name} {md_file.stem.replace('_', ' ')}"
+        # Use `qmd ls` to get actual normalized URLs (qmd lowercases filenames)
+        ls_result = subprocess.run(
+            ["qmd", "ls", org_name], capture_output=True, text=True
+        )
+        for line in ls_result.stdout.splitlines():
+            parts = line.split()
+            if not parts or not parts[-1].startswith("qmd://"):
+                continue
+            url = parts[-1]
+            stem = url.split("/")[-1].removesuffix(".md")
+            prefix = org_name.lower() + "-"
+            if stem.lower().startswith(prefix):
+                stem = stem[len(prefix):]
+            file_desc = f"{org_name} {stem.replace('-', ' ')}"
             subprocess.run(
-                ["qmd", "context", "add",
-                 f"qmd://{org_name}/{md_file.stem}", file_desc],
+                ["qmd", "context", "add", url, file_desc],
                 check=True,
             )
 
