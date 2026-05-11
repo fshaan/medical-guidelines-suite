@@ -26,8 +26,8 @@ def test_merge_patients_key(tmp_path):
             "patient_name": "测试",
             "guideline_results": [
                 {"guideline": "NCCN", "recommendation": "推荐" * 30,
-                 "execution_log": [{"cmd_id": "CMD-P001-NCCN-01", "match_count": 5,
-                                    "first_match_snippet": "x" * 30}]},
+                 "retrieval_sources": [{"chunk_id": "R001-01", "score": 0.85,
+                                        "snippet": "x" * 30}]},
             ],
             "consensus": ["共识"],
             "differences": ["分歧"],

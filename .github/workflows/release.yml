@@ -1,0 +1,61 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [main]
+    paths: [skill.json]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(python3 -c "import json; print(json.load(open('skill.json'))['version'])")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if release exists
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" &>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract changelog
+        if: steps.check.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python3 -c "
+          import re, os
+          ver = os.environ['VERSION']
+          text = open('CHANGELOG.md').read()
+          pattern = r'## .*?v?' + re.escape(ver) + r'.*?\n(.*?)(?=\n## |\Z)'
+          match = re.search(pattern, text, re.DOTALL)
+          print(match.group(1).strip() if match else 'See CHANGELOG.md for details.')
+          " > /tmp/release_notes.md
+
+      - name: Create release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file /tmp/release_notes.md \
+            --latest

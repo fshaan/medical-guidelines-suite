@@ -2,6 +2,11 @@ import json
 import pytest
 from pathlib import Path
 
+def pytest_configure(config):
+    """Register custom markers."""
+    config.addinivalue_line("markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')")
+
+
 @pytest.fixture
 def sample_patients():
     """12 位模拟患者（覆盖 structured + narrative 格式）"""
@@ -81,7 +86,7 @@ def mock_kb(tmp_path):
     for org in ["NCCN", "ESMO", "CSCO"]:
         ext_dir = kb / org / "extracted"
         ext_dir.mkdir(parents=True)
-        (ext_dir / f"{org}_GastricCancer.txt").write_text(
+        (ext_dir / f"{org}_GastricCancer.md").write_text(
             f"Line 1: {org} Gastric Cancer Guideline\n" * 100,
             encoding="utf-8",
         )
@@ -89,7 +94,7 @@ def mock_kb(tmp_path):
             f"# {org} 指南\n\n## 文件清单\n\n### 提取文件（推荐使用）\n\n"
             f"| 文件 | 版本 | 状态 | 行数 | 说明 |\n"
             f"|------|------|------|------|------|\n"
-            f"| extracted/{org}_GastricCancer.txt | 2026 | **默认** | 100 | 胃癌 |\n\n"
+            f"| extracted/{org}_GastricCancer.md | 2026 | **默认** | 100 | 胃癌 |\n\n"
             f"## 常用检索关键词\n\n### 诊断相关\n- diagnosis, 诊断\n- HER2\n\n"
             f"### 治疗相关\n- surgery, 手术\n- chemotherapy, 化疗\n",
             encoding="utf-8",

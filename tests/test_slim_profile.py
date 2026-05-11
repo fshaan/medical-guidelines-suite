@@ -1,4 +1,4 @@
-"""Tests for --profile slim mode."""
+"""Tests for batch pipeline utilities and validation."""
 import pytest
 import sys
 from pathlib import Path
@@ -6,31 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import json
 import argparse
-from batch_pipeline import ProfileConfig, PROFILE_FULL, PROFILE_SLIM, get_profile, generate_grep_commands, filter_orgs_by_disease, generate_batch_prompt, _is_flat_format, _aggregate_flat_results, _generate_consensus, cmd_validate
-
-
-class TestProfileConfig:
-    def test_full_profile_defaults(self):
-        config = get_profile("full")
-        assert config.name == "full"
-        assert config.dimension_groups is None
-        assert config.min_rec_length == 50
-        assert config.skip_anti_laziness is False
-        assert config.flat_json is False
-
-    def test_slim_profile_values(self):
-        config = get_profile("slim")
-        assert config.name == "slim"
-        assert len(config.dimension_groups) == 4
-        assert config.min_rec_length == 20
-        assert config.skip_anti_laziness is True
-        assert config.flat_json is True
-        assert config.org_filter_by_disease is True
-        assert config.micro_checkpoints is True
-
-    def test_unknown_profile_raises(self):
-        with pytest.raises(KeyError):
-            get_profile("unknown")
+from batch_pipeline import filter_orgs_by_disease, generate_batch_prompt, _is_flat_format, _aggregate_flat_results, _generate_consensus, cmd_validate, MIN_CITATION_COVERAGE, MIN_REC_LENGTH
 
 
 class TestFilterOrgsByDisease:
@@ -38,9 +14,9 @@ class TestFilterOrgsByDisease:
         kb_profile = {
             "orgs": ["NCCN", "JGCA", "ESMO"],
             "org_files": {
-                "NCCN": [{"file": "NCCN_GastricCancer_2026.txt", "path": "/kb/NCCN/extracted/NCCN_GastricCancer_2026.txt"}],
-                "JGCA": [{"file": "JGCA_Gastric_Guidelines.txt", "path": "/kb/JGCA/extracted/JGCA_Gastric_Guidelines.txt"}],
-                "ESMO": [{"file": "ESMO_BreastCancer_2025.txt", "path": "/kb/ESMO/extracted/ESMO_BreastCancer_2025.txt"}],
+                "NCCN": [{"file": "NCCN_GastricCancer_2026.md", "path": "/kb/NCCN/extracted/NCCN_GastricCancer_2026.md"}],
+                "JGCA": [{"file": "JGCA_Gastric_Guidelines.md", "path": "/kb/JGCA/extracted/JGCA_Gastric_Guidelines.md"}],
+                "ESMO": [{"file": "ESMO_BreastCancer_2025.md", "path": "/kb/ESMO/extracted/ESMO_BreastCancer_2025.md"}],
             },
         }
         result = filter_orgs_by_disease(kb_profile, "胃癌")
@@ -52,75 +28,15 @@ class TestFilterOrgsByDisease:
         kb_profile = {
             "orgs": ["NCCN", "JGCA"],
             "org_files": {
-                "NCCN": [{"file": "NCCN_Lung.txt", "path": "..."}],
-                "JGCA": [{"file": "JGCA_Lung.txt", "path": "..."}],
+                "NCCN": [{"file": "NCCN_Lung.md", "path": "..."}],
+                "JGCA": [{"file": "JGCA_Lung.md", "path": "..."}],
             },
         }
         result = filter_orgs_by_disease(kb_profile, "罕见病X")
         assert result == ["NCCN", "JGCA"]
 
 
-class TestGrepGenerationSlim:
-    def _make_features(self):
-        return {
-            "diagnosis_keywords": ["胃癌", "gastric"],
-            "staging_keywords": ["T3"],
-            "metastasis_keywords": ["peritoneal"],
-            "molecular_keywords": ["HER2"],
-            "marker_keywords": ["CEA"],
-            "treatment_keywords": ["SOX"],
-            "event_keywords": ["术后"],
-            "comorbidity_keywords": ["diabetes"],
-            "special_keywords": ["elderly"],
-            "all_keywords": ["胃癌", "gastric", "T3", "peritoneal", "HER2", "CEA", "SOX", "术后", "diabetes", "elderly"],
-        }
-
-    def _make_kb_profile(self):
-        return {
-            "orgs": ["NCCN", "JGCA", "ESMO"],
-            "org_files": {
-                "NCCN": [{"file": "NCCN_GastricCancer.txt"}],
-                "JGCA": [{"file": "JGCA_Gastric.txt"}],
-                "ESMO": [{"file": "ESMO_GastricCancer.txt"}],
-            },
-        }
-
-    def test_slim_produces_grouped_commands(self):
-        config = get_profile("slim")
-        features = self._make_features()
-        kb = self._make_kb_profile()
-        cmds = generate_grep_commands(features, kb, Path("/kb"), config=config)
-        # 4 groups x 3 orgs = 12
-        assert len(cmds) == 12
-
-    def test_slim_group_merges_keywords(self):
-        config = get_profile("slim")
-        features = self._make_features()
-        kb = self._make_kb_profile()
-        cmds = generate_grep_commands(features, kb, Path("/kb"), config=config)
-        group1_cmds = [c for c in cmds if c["dimension"] == "diagnosis_staging_metastasis"]
-        assert len(group1_cmds) == 3  # one per org
-
-    def test_slim_skips_empty_groups(self):
-        config = get_profile("slim")
-        features = self._make_features()
-        features["comorbidity_keywords"] = []
-        features["special_keywords"] = []
-        kb = self._make_kb_profile()
-        cmds = generate_grep_commands(features, kb, Path("/kb"), config=config)
-        # Group 4 empty → 3 groups x 3 orgs = 9
-        assert len(cmds) == 9
-
-    def test_full_profile_unchanged(self):
-        """config=None produces original behavior."""
-        features = self._make_features()
-        kb = self._make_kb_profile()
-        cmds_default = generate_grep_commands(features, kb, Path("/kb"))
-        cmds_explicit = generate_grep_commands(features, kb, Path("/kb"), config=None)
-        assert len(cmds_default) == len(cmds_explicit)
-
-
-class TestSlimPrompt:
+class TestPrompt:
     def _make_batch(self):
         return [{
             "patient_id": "P001",
@@ -130,47 +46,33 @@ class TestSlimPrompt:
                 "diagnosis_keywords": ["胃癌"],
                 "all_keywords": ["胃癌"],
             },
-            "grep_commands": [
-                {"org": "NCCN", "dimension": "diagnosis_staging_metastasis",
-                 "command": 'grep -n -i --include="*.txt" -r "胃癌" "/kb/NCCN/extracted"'},
+            "retrieval_results": [
+                {"content": "Gastric cancer treatment.", "path": "NCCN/extracted/NCCN_Gastric.md",
+                 "score": 0.85, "context": "NCCN gastric guidelines"},
             ],
         }]
 
     def _make_kb_profile(self):
         return {
             "orgs": ["NCCN"],
-            "org_files": {"NCCN": [{"file": "NCCN_Gastric.txt"}]},
+            "org_files": {"NCCN": [{"file": "NCCN_Gastric.md"}]},
             "root_index_content": "test index",
         }
 
-    def test_slim_prompt_contains_micro_checkpoints(self):
-        config = get_profile("slim")
-        prompt = generate_batch_prompt(
-            self._make_batch(), self._make_kb_profile(), "/kb", 1, 1, config=config,
-        )
-        assert "自检" in prompt
-
-    def test_slim_prompt_uses_flat_json_template(self):
-        config = get_profile("slim")
-        prompt = generate_batch_prompt(
-            self._make_batch(), self._make_kb_profile(), "/kb", 1, 1, config=config,
-        )
-        assert '"guideline":' in prompt
-        assert "guideline_results" not in prompt
-
-    def test_slim_prompt_no_execution_log(self):
-        config = get_profile("slim")
-        prompt = generate_batch_prompt(
-            self._make_batch(), self._make_kb_profile(), "/kb", 1, 1, config=config,
-        )
-        assert "execution_log" not in prompt
-        assert "execution_summary" not in prompt
-
-    def test_full_prompt_unchanged(self):
+    def test_prompt_contains_retrieval_results(self):
         prompt = generate_batch_prompt(
             self._make_batch(), self._make_kb_profile(), "/kb", 1, 1,
         )
-        assert "execution_log" in prompt
+        assert "Gastric cancer treatment" in prompt
+        assert "retrieval_sources" in prompt
+
+    def test_prompt_no_grep(self):
+        prompt = generate_batch_prompt(
+            self._make_batch(), self._make_kb_profile(), "/kb", 1, 1,
+        )
+        assert "grep" not in prompt.lower()
+        assert "CMD-P" not in prompt
+        assert "execution_log" not in prompt
 
 
 class TestFlatFormatDetection:
@@ -190,11 +92,11 @@ class TestAggregateFlatResults:
     def test_groups_by_patient_id(self):
         flat = [
             {"patient_id": "P1", "patient_name": "张三", "clinical_question": "Q1",
-             "guideline": "NCCN", "recommendation": "推荐A", "evidence_level": "1", "source_file": "a.txt"},
+             "guideline": "NCCN", "recommendation": "推荐A", "evidence_level": "1", "source_file": "a.md"},
             {"patient_id": "P1", "patient_name": "张三", "clinical_question": "Q1",
-             "guideline": "JGCA", "recommendation": "推荐B", "evidence_level": "强", "source_file": "b.txt"},
+             "guideline": "JGCA", "recommendation": "推荐B", "evidence_level": "强", "source_file": "b.md"},
             {"patient_id": "P2", "patient_name": "李四", "clinical_question": "Q2",
-             "guideline": "NCCN", "recommendation": "推荐C", "evidence_level": "2A", "source_file": "c.txt"},
+             "guideline": "NCCN", "recommendation": "推荐C", "evidence_level": "2A", "source_file": "c.md"},
         ]
         result = _aggregate_flat_results(flat)
         assert len(result) == 2
@@ -205,7 +107,7 @@ class TestAggregateFlatResults:
     def test_single_patient_single_guideline(self):
         flat = [
             {"patient_id": "P1", "patient_name": "A", "clinical_question": "Q",
-             "guideline": "NCCN", "recommendation": "R", "evidence_level": "1", "source_file": "f.txt"},
+             "guideline": "NCCN", "recommendation": "R", "evidence_level": "1", "source_file": "f.md"},
         ]
         result = _aggregate_flat_results(flat)
         assert len(result) == 1
@@ -243,7 +145,7 @@ class TestGenerateConsensus:
         assert diffs == []
 
 
-class TestValidateSlim:
+class TestValidate:
     def _make_results_json(self, tmp_path):
         data = {
             "results": [{
@@ -253,29 +155,31 @@ class TestValidateSlim:
                 "clinical_questions": [{
                     "guideline_results": [{
                         "guideline": "NCCN",
-                        "recommendation": "这是一段至少二十个字的推荐文本内容用于测试",
+                        "recommendation": "这是一段足够长的推荐文本内容用于测试目的，需要达到五十个字符以上才能通过验证检查",
+                        "evidence_level": "1",
+                        "source_file": "f.md",
+                        "retrieval_sources": [{"chunk_id": "R001-01", "score": 0.8, "snippet": "..."}],
                     }],
-                    "consensus": [],
-                    "differences": [],
+                    "consensus": ["c"],
+                    "differences": ["d"],
                 }],
+                "citation_coverage": 0.8,
             }]
         }
         p = tmp_path / "results.json"
         p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         return str(p)
 
-    def test_slim_validate_missing_evidence_is_not_error(self, tmp_path):
-        """In slim mode, missing evidence_level should not cause exit(1)."""
+    def test_validate_passes_with_complete_data(self, tmp_path):
         results_path = self._make_results_json(tmp_path)
         args = argparse.Namespace(
-            input=results_path, patients=None, kb_profile=None, profile="slim",
+            input=results_path, patients=None, kb_profile=None,
         )
         with pytest.raises(SystemExit) as exc:
             cmd_validate(args)
         assert exc.value.code == 0
 
-    def test_slim_validate_short_rec_passes_at_20(self, tmp_path):
-        """Slim mode allows rec >= 20 chars."""
+    def test_validate_warns_on_short_rec(self, tmp_path):
         data = {
             "results": [{
                 "patient_id": "P1",
@@ -284,9 +188,9 @@ class TestValidateSlim:
                 "clinical_questions": [{
                     "guideline_results": [{
                         "guideline": "NCCN",
-                        "recommendation": "这是二十字的推荐文本至少够了吧应该",
+                        "recommendation": "短推荐",
                         "evidence_level": "1",
-                        "source_file": "f.txt",
+                        "source_file": "f.md",
                     }],
                     "consensus": ["c"],
                     "differences": ["d"],
@@ -296,35 +200,9 @@ class TestValidateSlim:
         p = tmp_path / "results2.json"
         p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         args = argparse.Namespace(
-            input=str(p), patients=None, kb_profile=None, profile="slim",
+            input=str(p), patients=None, kb_profile=None,
         )
+        # Should still exit 0 (warnings don't fail), but the short rec warning fires
         with pytest.raises(SystemExit) as exc:
             cmd_validate(args)
         assert exc.value.code == 0
-
-
-import subprocess
-
-
-class TestCLIIntegration:
-    def test_orchestrate_accepts_profile_flag(self):
-        result = subprocess.run(
-            ["python3", "scripts/batch_pipeline.py", "orchestrate", "--help"],
-            capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent),
-        )
-        assert "--profile" in result.stdout
-        assert "slim" in result.stdout
-
-    def test_validate_accepts_profile_flag(self):
-        result = subprocess.run(
-            ["python3", "scripts/batch_pipeline.py", "validate", "--help"],
-            capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent),
-        )
-        assert "--profile" in result.stdout
-
-    def test_verify_batch_accepts_profile_flag(self):
-        result = subprocess.run(
-            ["python3", "scripts/batch_pipeline.py", "verify-batch", "--help"],
-            capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent),
-        )
-        assert "--profile" in result.stdout

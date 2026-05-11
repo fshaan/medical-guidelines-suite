@@ -18,8 +18,8 @@ import json
 import locale
 import os
 import re
+import subprocess
 import sys
-from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
@@ -27,43 +27,8 @@ from pathlib import Path
 # ─── Profile 配置 ────────────────────────────────────────────────────────────
 
 
-SLIM_DIMENSION_GROUPS = [
-    ["diagnosis_keywords", "staging_keywords", "metastasis_keywords"],
-    ["molecular_keywords", "marker_keywords"],
-    ["treatment_keywords", "event_keywords"],
-    ["comorbidity_keywords", "special_keywords"],
-]
-
-
-@dataclass
-class ProfileConfig:
-    name: str = "full"
-    dimension_groups: list | None = None
-    min_rec_length: int = 50
-    skip_anti_laziness: bool = False
-    skip_snippet_verify: bool = False
-    micro_checkpoints: bool = False
-    flat_json: bool = False
-    org_filter_by_disease: bool = False
-
-
-PROFILE_FULL = ProfileConfig()
-
-PROFILE_SLIM = ProfileConfig(
-    name="slim",
-    dimension_groups=SLIM_DIMENSION_GROUPS,
-    min_rec_length=20,
-    skip_anti_laziness=True,
-    skip_snippet_verify=True,
-    micro_checkpoints=True,
-    flat_json=True,
-    org_filter_by_disease=True,
-)
-
-
-def get_profile(name: str) -> ProfileConfig:
-    """获取命名 profile 配置。"""
-    return {"full": PROFILE_FULL, "slim": PROFILE_SLIM}[name]
+MIN_CITATION_COVERAGE = 0.5
+MIN_REC_LENGTH = 50
 
 
 # ─── parse 子命令 ─────────────────────────────────────────────────────────────
@@ -333,9 +298,9 @@ def scan_knowledge_base(kb_root: Path) -> dict:
         if not extracted_dir.is_dir():
             print(f"  ⚠ {org}/ 无 extracted/ 子目录，跳过", file=sys.stderr)
             continue
-        txt_files = sorted(extracted_dir.glob("*.txt"))
-        if not txt_files:
-            print(f"  ⚠ {org}/extracted/ 无 .txt 文件，跳过", file=sys.stderr)
+        md_files = sorted(extracted_dir.glob("*.md"))
+        if not md_files:
+            print(f"  ⚠ {org}/extracted/ 无 .md 文件，跳过", file=sys.stderr)
             continue
 
         profile["orgs"].append(org)
@@ -345,7 +310,7 @@ def scan_knowledge_base(kb_root: Path) -> dict:
                 "path": str(f),
                 "lines": sum(1 for _ in f.open(encoding="utf-8")),
             }
-            for f in txt_files
+            for f in md_files
         ]
 
         org_ds = org_dir / "data_structure.md"
@@ -429,27 +394,6 @@ def _parse_clinical_question_map(text: str) -> dict:
     return cq_map
 
 
-# grep 特殊字符转义
-_GREP_SPECIAL = re.compile(r'([\[\]().*+?{}\\^$|"])')
-
-
-def escape_grep_keyword(keyword: str) -> list[str]:
-    """转义 grep 特殊字符，含括号时额外生成去括号变体 (D4)。
-
-    Returns: 1-2 个转义后的关键词列表
-    """
-    escaped = _GREP_SPECIAL.sub(r"\\\1", keyword)
-    variants = [escaped]
-
-    # D4: 含括号时生成去括号变体
-    if "(" in keyword or "[" in keyword:
-        stripped = re.sub(r"[()[\]]", "", keyword)
-        tokens = [t for t in re.split(r"[^\w\u4e00-\u9fff]+", stripped) if t]
-        if len(tokens) >= 2:
-            variant = ".*".join(_GREP_SPECIAL.sub(r"\\\1", t) for t in tokens)
-            variants.append(variant)
-
-    return variants
 
 
 # 疾病类型 → 搜索关键词映射
@@ -488,91 +432,81 @@ def filter_orgs_by_disease(kb_profile: dict, disease_type: str) -> list[str]:
     return relevant or kb_profile["orgs"]
 
 
-def generate_grep_commands(
-    patient_features: dict,
-    kb_profile: dict,
-    kb_root: "Path",
-    config: "ProfileConfig | None" = None,
-) -> list[dict]:
-    """为一位患者生成覆盖所有 org 的 grep 命令。
+def build_queries(patient: dict, features: dict) -> list[str]:
+    """Build QMD queries from patient features. One query per clinical dimension.
 
-    按临床维度合并关键词到单条 grep（用 \\| 分隔），减少命令数。
-    返回: [{"org": str, "dimension": str, "command": str}, ...]
+    Args:
+        patient: Patient data dict (with disease_type etc.)
+        features: Output of extract_patient_features()
+
+    Returns:
+        List of natural language query strings (1-N)
     """
-    all_kw = patient_features.get("all_keywords", [])
-    if not all_kw:
-        return []
+    queries = []
+    disease = patient.get("disease_type", "")
 
-    # Slim: grouped dimensions
-    if config and config.dimension_groups:
-        commands = []
-        orgs = kb_profile["orgs"]
-        for org in orgs:
-            files = kb_profile["org_files"].get(org, [])
-            if not files:
-                continue
-            extracted_dir = str(kb_root / org / "extracted")
-            for group in config.dimension_groups:
-                merged_kw = []
-                for dim_name in group:
-                    merged_kw.extend(patient_features.get(dim_name, []))
-                if not merged_kw:
-                    continue
-                merged_kw = list(dict.fromkeys(merged_kw))[:15]
-                all_variants = []
-                for kw in merged_kw:
-                    all_variants.extend(escape_grep_keyword(kw))
-                if not all_variants:
-                    continue
-                pattern = "\\|".join(all_variants)
-                group_name = "_".join(d.replace("_keywords", "") for d in group)
-                cmd = f'grep -n -i --include="*.txt" -r "{pattern}" "{extracted_dir}"'
-                commands.append(
-                    {
-                        "org": org,
-                        "dimension": group_name,
-                        "command": cmd,
-                    }
-                )
-        return commands
+    staging = features.get("staging_keywords", [])
+    if staging:
+        queries.append(
+            f"{disease} {' '.join(staging)} diagnosis staging treatment"
+        )
 
-    dimensions = {}
-    for key, val in patient_features.items():
-        if key == "all_keywords" or not val:
-            continue
-        if key.endswith("_keywords"):
-            dim_name = key.replace("_keywords", "")
-            dimensions[dim_name] = val
+    molecular = features.get("molecular_keywords", [])
+    if molecular:
+        queries.append(
+            f"{disease} {' '.join(molecular)} targeted therapy immunotherapy"
+        )
 
-    if not dimensions:
-        dimensions["general"] = all_kw
+    treatment = features.get("treatment_keywords", [])
+    if treatment:
+        queries.append(
+            f"{disease} {' '.join(treatment)} recommended regimen evidence level"
+        )
 
-    commands = []
-    for org in kb_profile["orgs"]:
-        files = kb_profile["org_files"].get(org, [])
-        if not files:
-            continue
-        extracted_dir = str(kb_root / org / "extracted")
+    # 推荐词汇专项查询：CSCO/NCCN 推荐表特有词汇（I级推荐、1A类、Category 1 等）
+    # 只出现在临床推荐表，不出现在参考文献；显著提升推荐表 chunk 的检索命中率
+    stage_str = " ".join(staging[:2]) if staging else ""
+    queries.insert(
+        0,
+        f"{disease} {stage_str} I级推荐 1A类 Category 1 治疗方案 推荐意见".strip(),
+    )
 
-        for dim_name, keywords in dimensions.items():
-            all_variants = []
-            for kw in keywords:
-                all_variants.extend(escape_grep_keyword(kw))
+    return queries or [f"{disease} treatment recommendation"]
 
-            if not all_variants:
-                continue
 
-            pattern = "\\|".join(all_variants)
-            cmd = f'grep -n -i --include="*.txt" -r "{pattern}" "{extracted_dir}"'
-            commands.append(
-                {
-                    "org": org,
-                    "dimension": dim_name,
-                    "command": cmd,
-                }
-            )
+# 参考文献 chunk 识别：期刊名、DOI/PMID、形如 "[1] AUTHOR YJ" 的引文
+_REFERENCE_JOURNAL_NAMES = (
+    r"Lancet|N\s*Engl\s*J\s*Med|NEJM|J\s*Clin\s*Oncol|JCO|Ann\s*Oncol|"
+    r"Gastroenterology|BMJ|JAMA|Nat\s*Med|Cancer\s*Cell|Clin\s*Cancer\s*Res|"
+    r"Eur\s*J\s*Cancer|Oncologist|Br\s*J\s*Cancer|Int\s*J\s*Cancer"
+)
+_REFERENCE_LINE_PATTERNS = [
+    re.compile(r"^\s*[\[［]\s*\d+\s*[\]］]\s*[A-Z一-鿿]"),  # [1] XXX
+    re.compile(r"\bet\s*al\.", re.IGNORECASE),  # et al.
+    re.compile(r"\b(?:doi|DOI|PMID|pmid)\s*[:：]", re.IGNORECASE),
+    re.compile(r"\b(?:" + _REFERENCE_JOURNAL_NAMES + r")\b", re.IGNORECASE),
+    re.compile(r"\b(?:19|20)\d{2}[;,]\s*\d+"),  # "2020; 12" 期刊格式
+    re.compile(r"\bSuppl\b|\bvol\b", re.IGNORECASE),
+]
 
-    return commands
+
+def _is_reference_chunk(content: str) -> bool:
+    """判断 chunk 是否主要为参考文献/引文内容。
+
+    规则：>=50% 的非空行命中参考文献特征（期刊名、DOI、[N] AUTHOR、et al.）。
+    """
+    if not content:
+        return False
+    lines = [l.strip() for l in content.split("\n") if l.strip()]
+    if len(lines) < 2:
+        # 单行 chunk：只要命中 2+ 种特征就判为参考文献
+        hits = sum(1 for p in _REFERENCE_LINE_PATTERNS if p.search(content))
+        return hits >= 2
+    ref_count = 0
+    for line in lines:
+        if any(p.search(line) for p in _REFERENCE_LINE_PATTERNS):
+            ref_count += 1
+    return ref_count / len(lines) > 0.5
 
 
 # ─── 临床特征提取 ──────────────────────────────────────────────────────────────
@@ -805,84 +739,6 @@ def estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
-def _generate_slim_prompt(
-    batch: list[dict],
-    kb_profile: dict,
-    kb_root: str,
-    batch_idx: int,
-    total_batches: int,
-    output_file: str,
-    config: "ProfileConfig",
-) -> str:
-    """生成 slim profile 的简化 batch prompt。"""
-    lines = []
-    lines.append(f"# 批次 {batch_idx:03d}/{total_batches:03d} 检索任务\n")
-    lines.append("<CONTEXT_RESET>")
-    lines.append("请忽略此消息之前的所有检索结果和患者信息。")
-    lines.append("以下是一个全新的、独立的批次任务。")
-    lines.append("</CONTEXT_RESET>\n")
-
-    lines.append("## 规则")
-    lines.append("- 逐条执行 grep 命令，不得跳过")
-    lines.append("- 不得调用任何工具、函数或子代理")
-    lines.append("- 所有输出使用简体中文")
-    lines.append("- 禁止编写脚本批量执行\n")
-
-    lines.append(f"## 知识库\n路径: {kb_root}\n")
-
-    # 步骤 1: grep 命令 + 微检查点
-    lines.append("## 步骤 1：执行 grep 命令\n")
-
-    for pi, patient in enumerate(batch, 1):
-        pid = patient.get("patient_id", "?")
-        pname = patient.get("patient_name", "?")
-        grep_cmds = patient.get("grep_commands", [])
-
-        lines.append(f"### 患者 P{pi:03d}: {pname} ({pid})\n")
-
-        for ci, gc in enumerate(grep_cmds, 1):
-            cmd_id = f"CMD-P{pi:03d}-{gc['org']}-{ci:02d}"
-            lines.append(f"{cmd_id}: {gc['command']}")
-
-        if config.micro_checkpoints and grep_cmds:
-            lines.append(
-                f"\n【自检 P{pi:03d}】确认执行了全部 {len(grep_cmds)} 条命令。\n"
-            )
-
-    # 步骤 2: JSON 输出
-    lines.append("## 步骤 2：输出 JSON\n")
-    lines.append("根据 grep 结果，输出以下格式（严格遵守，不得添加或省略字段）：\n")
-    lines.append("```json")
-    lines.append("{")
-    lines.append(f'  "batch_id": "batch_{batch_idx:03d}",')
-    lines.append('  "processed_at": "ISO时间戳",')
-    lines.append('  "results": [')
-    lines.append("    {")
-    lines.append('      "patient_id": "实际ID",')
-    lines.append('      "patient_name": "实际姓名",')
-    lines.append('      "clinical_question": "一句话临床问题摘要",')
-    lines.append('      "guideline": "NCCN",')
-    lines.append(
-        f'      "recommendation": ">={config.min_rec_length}字推荐内容（简体中文）",'
-    )
-    lines.append('      "evidence_level": "证据等级",')
-    lines.append('      "source_file": "匹配的文件名"')
-    lines.append("    }")
-    lines.append("  ]")
-    lines.append("}")
-    lines.append("```\n")
-
-    if config.micro_checkpoints:
-        lines.append("【最终自检】")
-        lines.append(f"- results 条目总数应 = 患者数 x guideline数")
-        lines.append(f"- 每条 recommendation >= {config.min_rec_length} 字\n")
-
-    if output_file:
-        lines.append(f"将完整 JSON 保存到: {output_file}")
-
-    return "\n".join(lines)
-
-
 def generate_batch_prompt(
     batch: list[dict],
     kb_profile: dict,
@@ -890,70 +746,56 @@ def generate_batch_prompt(
     batch_idx: int,
     total_batches: int,
     output_file: str = "",
-    config: "ProfileConfig | None" = None,
 ) -> str:
-    """生成自包含的批次 prompt 文件内容。"""
-    if config and config.flat_json:
-        return _generate_slim_prompt(
-            batch,
-            kb_profile,
-            kb_root,
-            batch_idx,
-            total_batches,
-            output_file,
-            config,
-        )
+    """Generate self-contained batch prompt (based on pre-retrieval results)."""
     lines = []
 
-    lines.append(f"# 批次 {batch_idx:03d}/{total_batches:03d} 检索任务\n")
+    lines.append(f"# Batch {batch_idx:03d}/{total_batches:03d} Analysis Task\n")
     lines.append("<CONTEXT_RESET>")
-    lines.append("请忽略此消息之前的所有检索结果和患者信息。")
-    lines.append("以下是一个全新的、独立的批次任务，从零开始处理。")
-    lines.append("不得引用或参考任何其他批次的结果。")
-    lines.append('不得使用"同上"、"与前面类似"、"参考前述"等表述。')
+    lines.append("Ignore all retrieval results and patient data before this message.")
+    lines.append("This is a fresh, independent batch task. Start from zero.")
+    lines.append("Do not reference any other batch results.")
     lines.append("</CONTEXT_RESET>\n")
 
     lines.append("<MANDATORY_RULES>")
-    lines.append("1. 必须逐条执行以下所有 grep 命令，不得跳过任何组织")
-    lines.append("2. 每位患者的每个指南组织都必须有检索结果")
-    lines.append('3. 如果某指南未涉及该问题，记录: "该指南未涉及此临床问题"')
-    lines.append("4. 输出必须为简体中文")
-    lines.append("5. 可以补充脚本未生成的关键词，但不得删减已有的 grep 命令")
-    lines.append(
-        "6. 禁止使用 Agent tool、Task tool 或任何并行/子代理机制。所有 grep 命令必须在当前会话中逐条执行"
-    )
-    lines.append("7. 禁止编写脚本批量执行 grep。必须逐条运行并记录结果")
+    lines.append("1. Carefully read each patient's pre-retrieved results and extract recommendations, evidence levels, and sources")
+    lines.append("2. Each patient has `relevant_orgs` — ONLY produce recommendations for those guideline organizations. Do NOT include any 'not applicable' entries for the filtered-out orgs (they are pre-filtered because the KB does not cover this disease type).")
+    lines.append('3. If pre-retrieval has no content for a relevant guideline, record: "该指南未检索到与本患者相关的内容" and explain why briefly (one sentence).')
+    lines.append("4. Output must be in Simplified Chinese")
+    lines.append("5. Recommendations must be based on pre-retrieved results, not fabricated")
+    lines.append("6. Must cite which pre-retrieved chunks were used in retrieval_sources")
+    lines.append("7. Citation coverage requirement: cite at least 50% of pre-retrieved results")
+    lines.append('8. `guideline_version` format MUST be "{org} {disease}指南{year}" (e.g., "CSCO 胃癌诊疗指南2025"). Do NOT use free-form version strings like "Gastric Cancer 2022 / Pan-Asia 2024".')
+    lines.append('9. `consensus` and `differences` fields MUST be arrays of bullet-point strings (one key point per element), NOT a single long paragraph string.')
     lines.append("</MANDATORY_RULES>\n")
 
-    lines.append(f"## 知识库\n路径: {kb_root}\n")
-    lines.append("根索引:\n---")
+    lines.append(f"## Knowledge Base\nPath: {kb_root}\n")
+    lines.append("Root index:\n---")
     lines.append(kb_profile.get("root_index_content", ""))
     lines.append("---\n")
 
-    lines.append(f"## 患者列表（本批次 {len(batch)} 人）\n")
+    lines.append(f"## Patient List (this batch: {len(batch)} patients)\n")
 
     for pi, patient in enumerate(batch, 1):
         pid = patient.get("patient_id", "?")
         pname = patient.get("patient_name", "?")
         features = patient.get("features", {})
-        grep_cmds = patient.get("grep_commands", [])
+        retrieval_results = patient.get("retrieval_results", [])
 
-        lines.append(f"### 患者 {pi}: {pname} ({pid})\n")
+        lines.append(f"### Patient {pi}: {pname} ({pid})\n")
 
-        lines.append("**临床信息:**")
+        lines.append("**Clinical info:**")
         for k, v in patient.items():
-            if k in ("features", "grep_commands") or v is None:
+            if k in ("features", "retrieval_results"):
+                continue
+            if v is None:
                 continue
             lines.append(f"- {k}: {v}")
 
         confidence = features.get("confidence", "high")
-        lines.append(f"\n**脚本提取置信度**: {confidence}")
-        if confidence == "low":
-            lines.append(
-                "⚠ 该患者信息稀疏，请从临床叙述中补充推断关键词并扩展检索范围。"
-            )
+        lines.append(f"\n**Feature extraction confidence**: {confidence}")
 
-        lines.append("\n**脚本提取的关键词:**")
+        lines.append("\n**Extracted keywords:**")
         for dim_key in sorted(features.keys()):
             if dim_key.endswith("_keywords") and dim_key != "all_keywords":
                 kws = features[dim_key]
@@ -961,138 +803,173 @@ def generate_batch_prompt(
                     dim_name = dim_key.replace("_keywords", "")
                     lines.append(f"- {dim_name}: {', '.join(kws)}")
 
-        if grep_cmds:
+        if retrieval_results:
             lines.append(
-                f"\n#### 必须执行的 grep 命令（共 {len(grep_cmds)} 条，不得跳过）\n"
+                f"\n#### Pre-retrieved Results ({len(retrieval_results)} chunks)\n"
             )
-            current_org = None
-            org_seq = {}  # org -> current sequence number
-            for gc in grep_cmds:
-                org = gc["org"]
-                if org != current_org:
-                    current_org = org
-                    lines.append(f"**{current_org}（必须）:**")
-                org_seq.setdefault(org, 0)
-                org_seq[org] += 1
-                cmd_id = f"CMD-P{pi:03d}-{org}-{org_seq[org]:02d}"
-                lines.append(f"{cmd_id}: {gc['command']}")
-                lines.append(
-                    f"  → 记录到 execution_log: {{cmd_id, match_count, first_match_snippet (≥30字)}}"
-                )
+            by_org: dict[str, list] = {}
+            for ri, hit in enumerate(retrieval_results, 1):
+                path = hit.get("path", "")
+                org = path.split("/")[0] if "/" in path else "unknown"
+                by_org.setdefault(org, []).append((ri, hit))
 
-        total_cmds = len(grep_cmds) if grep_cmds else 0
+            for org, hits in by_org.items():
+                lines.append(f"**{org}:**\n")
+                for ri, hit in hits:
+                    score = hit.get("score", 0)
+                    context = hit.get("context", "")
+                    content = hit.get("content", "")
+                    path = hit.get("path", "")
+                    chunk_id = f"R{pi:03d}-{ri:02d}"
+                    lines.append(f"[{chunk_id}] (score={score:.2f}) {context}")
+                    lines.append(f"  file: {path}")
+                    lines.append(f"  content: {content}")
+                    lines.append("")
 
-        if total_cmds > 0:
-            lines.append(f"\n#### ✅ 检查点 [患者 {pi}: {pname}]")
-            lines.append(f"确认以上 {total_cmds} 条 grep 命令全部执行完毕。")
-            lines.append(f"在 JSON 输出中填写该患者的 execution_summary:")
-            lines.append(f"  total_commands_in_prompt: {total_cmds}")
+            min_citations = max(1, len(retrieval_results) // 2)
+            lines.append(f"#### Citation Requirement [Patient {pi}: {pname}]")
             lines.append(
-                f"  total_commands_executed: <实际执行数，必须等于 {total_cmds}>"
+                f"Cite chunk IDs (e.g. R{pi:03d}-01) in retrieval_sources. "
+                f"Coverage >= {MIN_CITATION_COVERAGE:.0%} (at least {min_citations} chunks)."
             )
-            lines.append(
-                f"  commands_with_zero_matches: [<列出 match_count=0 的 CMD-ID>]"
-            )
+        else:
+            lines.append("\n#### Pre-retrieved Results\n")
+            lines.append("No pre-retrieved results available.")
+            lines.append('You MUST record: "该指南未检索到与本患者相关的内容" for each guideline.')
+            lines.append("Do NOT fabricate recommendations without retrieved evidence.\n")
 
-        lines.append("\n#### 补充检索")
-        lines.append("所有必须命令（CMD-*）执行完毕且记录到 execution_log 后，")
-        lines.append("可补充执行额外 grep 命令。补充命令不需要 CMD-ID。\n")
+        lines.append("")
 
-    lines.append("## 输出要求\n")
-    lines.append(f"- 文件路径: {output_file}")
-    lines.append("- 格式: JSON（严格按以下模板）")
-    lines.append("- 输出语言: 简体中文")
-    lines.append('- 顶层键必须是 `"results"`（不是 `"patients"`）')
+    lines.append("## Output Requirements\n")
+    lines.append(f"- File path: {output_file}")
+    lines.append("- Format: JSON (strict template below)")
+    lines.append("- Output language: Simplified Chinese")
+    lines.append('- Top-level key must be `"results"` (not `"patients"`)')
     lines.append("")
-    lines.append("完整 JSON 模板（必须严格遵循此结构）:")
+    lines.append("JSON template:")
+
     template = {
         "batch_id": f"batch_{batch_idx:03d}",
-        "processed_at": "2026-03-25T10:00:00",
+        "processed_at": "2026-04-08T10:00:00",
         "results": [
             {
-                "patient_id": "T002690492",
-                "patient_name": "章玉林",
-                "clinical_question": "临床问题摘要",
+                "patient_id": "P001",
+                "patient_name": "Patient Name",
+                "clinical_question": "Clinical question summary",
                 "guideline_results": [
                     {
                         "guideline": "NCCN",
                         "version": "2026.V2",
-                        "recommendation": "推荐内容（简体中文，≥50字）",
+                        "recommendation": "Recommendation (Chinese, >=50 chars)",
                         "evidence_level": "Category 1",
-                        "source_file": "NCCN_GastricCancer_2026.V2_EN.txt",
-                        "source_lines": "234-267",
-                        "execution_log": [
+                        "source_file": "NCCN/extracted/NCCN_Gastric_2026.md",
+                        "retrieval_sources": [
                             {
-                                "cmd_id": "CMD-P001-NCCN-01",
-                                "match_count": 14,
-                                "first_match_snippet": "第一个匹配行的文本片段（≥30字，match_count=0时为空字符串）",
+                                "chunk_id": "R001-01",
+                                "score": 0.85,
+                                "snippet": "First 40 chars of cited chunk...",
                             }
                         ],
                     }
                 ],
-                "consensus": ["各指南共识点1"],
-                "differences": ["各指南分歧点1"],
-                "execution_summary": {
-                    "total_commands_in_prompt": 30,
-                    "total_commands_executed": 30,
-                    "commands_with_zero_matches": ["CMD-P001-JGCA-02"],
-                },
+                "citation_coverage": 0.75,
+                "consensus": "Cross-guideline consensus analysis",
+                "differences": "Cross-guideline difference analysis",
             }
         ],
     }
+
     lines.append("```json")
     lines.append(json.dumps(template, ensure_ascii=False, indent=2))
-    lines.append("```")
+    lines.append("```\n")
 
     return "\n".join(lines)
 
 
 def cmd_orchestrate(args):
-    """orchestrate 子命令入口 — 自动编排批处理流程"""
+    """orchestrate subcommand -- batch processing with QMD pre-retrieval."""
+    from scripts.retriever import QMDService
+
     kb_root = resolve_kb_root(getattr(args, "kb_root", None))
-    print(f"知识库路径: {kb_root}")
+    print(f"Knowledge base: {kb_root}")
 
     kb_profile = scan_knowledge_base(kb_root)
     if not kb_profile["orgs"]:
-        print("知识库为空（无有效 org 目录）", file=sys.stderr)
+        print("Knowledge base is empty", file=sys.stderr)
         sys.exit(1)
-
-    config = get_profile(getattr(args, "profile", "full"))
-    if config.name == "slim":
-        print(f"  Profile: slim（小模型优化模式）")
 
     patients_path = Path(args.patients).resolve()
     if not patients_path.exists():
-        print(f"患者文件不存在: {patients_path}", file=sys.stderr)
+        print(f"Patients file not found: {patients_path}", file=sys.stderr)
         sys.exit(1)
     patients_data = json.loads(patients_path.read_text(encoding="utf-8"))
     patients = patients_data.get("patients", [])
     if not patients:
-        print("患者列表为空", file=sys.stderr)
+        print("Patient list is empty", file=sys.stderr)
         sys.exit(1)
 
     enriched_patients = []
-    total_grep = 0
-    total_kw = 0
-    for p in patients:
-        features = extract_patient_features(p)
-        if config.org_filter_by_disease:
-            disease = p.get("disease_type", "")
-            filtered_profile = {
-                **kb_profile,
-                "orgs": filter_orgs_by_disease(kb_profile, disease),
+    total_results = 0
+    total_queries = 0
+    total_filtered_refs = 0
+    total_filtered_orgs = 0
+
+    with QMDService() as qmd:
+        for p in patients:
+            features = extract_patient_features(p)
+            queries = build_queries(p, features)
+            total_queries += len(queries)
+
+            # Phase 3.1/3.2: 按 disease_type 过滤相关 org（CRC 患者 →
+            # 仅保留 CSCO/NCCN，跳过仅含胃癌指南的 JGCA/CACA/ESMO）
+            relevant_orgs = filter_orgs_by_disease(
+                kb_profile, p.get("disease_type", "")
+            )
+            relevant_org_set = set(relevant_orgs)
+
+            retrieval_results = []
+            for q in queries:
+                # Phase 5.4: min_score 0.3 → 0.35（配合参考文献过滤，提高相关性）
+                hits = qmd.query(q, top_k=10, min_score=0.35)
+                retrieval_results.extend(hits)
+
+            # 去重
+            seen = set()
+            unique_results = []
+            for hit in retrieval_results:
+                key = (hit.get("path", ""), hash(hit.get("content", "")))
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                # Phase 3.1/3.2: 组织过滤 — 跳过不适用 org 的结果
+                path = hit.get("path", "")
+                org = path.split("/", 1)[0] if "/" in path else ""
+                if relevant_org_set and org and org not in relevant_org_set:
+                    total_filtered_orgs += 1
+                    continue
+
+                # Phase 5.1/5.2: 参考文献 chunk 过滤
+                if _is_reference_chunk(hit.get("content", "")):
+                    total_filtered_refs += 1
+                    continue
+
+                unique_results.append(hit)
+
+            total_results += len(unique_results)
+            enriched = {
+                **p,
+                "features": features,
+                "retrieval_results": unique_results,
+                "relevant_orgs": relevant_orgs,
             }
-            grep_cmds = generate_grep_commands(
-                features, filtered_profile, kb_root, config=config
-            )
-        else:
-            grep_cmds = generate_grep_commands(
-                features, kb_profile, kb_root, config=config
-            )
-        enriched = {**p, "features": features, "grep_commands": grep_cmds}
-        enriched_patients.append(enriched)
-        total_grep += len(grep_cmds)
-        total_kw += len(features.get("all_keywords", []))
+            enriched_patients.append(enriched)
+
+    print(
+        f"Pre-retrieval done: {len(patients)} patients, "
+        f"{total_queries} queries, {total_results} results "
+        f"(filtered {total_filtered_refs} refs, {total_filtered_orgs} off-topic orgs)\n"
+    )
 
     batch_size = args.batch_size
     max_tokens = args.max_prompt_tokens
@@ -1101,17 +978,13 @@ def cmd_orchestrate(args):
     final_batches = []
     for batch in batches:
         prompt = generate_batch_prompt(
-            batch,
-            kb_profile,
-            str(kb_root),
-            len(final_batches) + 1,
-            len(batches),
-            config=config,
+            batch, kb_profile, str(kb_root),
+            len(final_batches) + 1, len(batches),
         )
         tokens = estimate_tokens(prompt)
         if tokens > max_tokens and len(batch) > 1:
             sub_batches = _auto_split_batch(
-                batch, kb_profile, str(kb_root), max_tokens, config=config
+                batch, kb_profile, str(kb_root), max_tokens,
             )
             final_batches.extend(sub_batches)
         else:
@@ -1120,100 +993,42 @@ def cmd_orchestrate(args):
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    existing_plan_path = output_dir / "orchestration_plan.json"
-    if existing_plan_path.exists():
-        try:
-            old_plan = json.loads(existing_plan_path.read_text(encoding="utf-8"))
-            old_batches = old_plan.get("batches", [])
-            pending = [b for b in old_batches if b.get("status") == "pending"]
-            completed = [b for b in old_batches if b.get("status") == "completed"]
-            if pending:
-                print(
-                    f"  ℹ 检测到已有计划: {len(completed)} 批已完成, {len(pending)} 批待处理。进入续跑模式。"
-                )
-            elif completed:
-                print(
-                    f"  ℹ 检测到已有计划且全部完成 ({len(completed)} 批)。将重新生成。"
-                )
-                print(f"     如需保留旧结果，请指定不同的 --output-dir。")
-        except (json.JSONDecodeError, KeyError):
-            print(f"  ⚠ 已有 orchestration_plan.json 格式异常，将重新生成。")
-
-    plan_batches = []
-    for bi, batch in enumerate(final_batches, 1):
-        batch_id = f"batch_{bi:03d}"
-        prompt_file = output_dir / f"{batch_id}_prompt.md"
-        output_file = output_dir / f"rag_{batch_id}.json"
-
-        status = "pending"
-        if output_file.exists():
-            try:
-                check = json.loads(output_file.read_text(encoding="utf-8"))
-                if check.get("results"):
-                    status = "completed"
-                    print(f"  ✓ {batch_id} 已完成 (checkpoint)")
-            except (json.JSONDecodeError, KeyError):
-                pass
-
-        if status == "pending":
-            prompt = generate_batch_prompt(
-                batch,
-                kb_profile,
-                str(kb_root),
-                bi,
-                len(final_batches),
-                output_file=str(output_file),
-                config=config,
-            )
-            prompt_file.write_text(prompt, encoding="utf-8")
-
-        plan_batches.append(
-            {
-                "id": batch_id,
-                "prompt_file": str(prompt_file),
-                "output_file": str(output_file),
-                "patients": [p.get("patient_id") for p in batch],
-                "status": status,
-            }
+    for i, batch in enumerate(final_batches, 1):
+        output_file = output_dir / f"rag_batch_{i:03d}.json"
+        prompt = generate_batch_prompt(
+            batch, kb_profile, str(kb_root),
+            i, len(final_batches),
+            output_file=str(output_file),
         )
+        prompt_file = output_dir / f"batch_{i:03d}_prompt.md"
+        prompt_file.write_text(prompt, encoding="utf-8")
+        print(f"  batch {i:03d}: {len(batch)} patients -> {prompt_file.name}")
 
     plan = {
-        "version": "2.2",
-        "created_at": datetime.now().isoformat(),
-        "kb_root": str(kb_root),
+        "total_patients": len(patients),
+        "total_batches": len(final_batches),
+        "total_queries": total_queries,
+        "total_retrieval_results": total_results,
         "kb_profile": {
             "orgs": kb_profile["orgs"],
-            "org_files": kb_profile["org_files"],
+            "kb_root": str(kb_root),
         },
-        "total_patients": len(patients),
-        "batch_size": batch_size,
-        "batches": plan_batches,
-        "next_steps": [
-            f"python scripts/batch_pipeline.py merge --input-dir {output_dir} --output {output_dir.parent / 'rag_results.json'}",
-            f"python scripts/batch_pipeline.py validate --input {output_dir.parent / 'rag_results.json'} --patients {patients_path}",
-            f"python scripts/batch_pipeline.py generate --input {output_dir.parent / 'rag_results.json'} --format md",
+        "batches": [
+            {
+                "batch_id": f"batch_{i:03d}",
+                "patient_count": len(b),
+                "prompt_file": f"batch_{i:03d}_prompt.md",
+                "output_file": f"rag_batch_{i:03d}.json",
+                "status": "pending",
+            }
+            for i, b in enumerate(final_batches, 1)
         ],
-        "stats": {
-            "total_grep_commands": total_grep,
-            "orgs_covered": sorted(kb_profile["orgs"]),
-            "avg_keywords_per_patient": round(total_kw / len(patients), 1)
-            if patients
-            else 0,
-        },
     }
     plan_path = output_dir / "orchestration_plan.json"
     plan_path.write_text(
         json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-
-    pending = sum(1 for b in plan_batches if b["status"] == "pending")
-    completed = sum(1 for b in plan_batches if b["status"] == "completed")
-    print(f"\n编排完成:")
-    print(f"  患者: {len(patients)}")
-    print(f"  批次: {len(final_batches)} (待处理: {pending}, 已完成: {completed})")
-    print(f"  grep 命令总数: {total_grep}")
-    print(f"  组织覆盖: {', '.join(sorted(kb_profile['orgs']))}")
-    print(f"  计划文件: {plan_path}")
+    print(f"\nOrchestration complete: {plan_path}")
 
 
 def _auto_split_batch(
@@ -1221,7 +1036,6 @@ def _auto_split_batch(
     kb_profile: dict,
     kb_root: str,
     max_tokens: int,
-    config: "ProfileConfig | None" = None,
 ) -> list[list[dict]]:
     """D3: 递归拆分超限批次"""
     if len(batch) <= 1:
@@ -1232,10 +1046,10 @@ def _auto_split_batch(
     result = []
 
     for sub in (left, right):
-        prompt = generate_batch_prompt(sub, kb_profile, kb_root, 1, 999, config=config)
+        prompt = generate_batch_prompt(sub, kb_profile, kb_root, 1, 999)
         if estimate_tokens(prompt) > max_tokens and len(sub) > 1:
             result.extend(
-                _auto_split_batch(sub, kb_profile, kb_root, max_tokens, config=config)
+                _auto_split_batch(sub, kb_profile, kb_root, max_tokens)
             )
         else:
             result.append(sub)
@@ -1324,10 +1138,12 @@ def _deduplicate_guideline_results(patient: dict) -> dict:
                 total_removed += removed
                 cq["guideline_results"] = unique
 
+        # Normalize string → list first to prevent dict.fromkeys from
+        # iterating characters (previous bug: "各指南一致" → ['各','指',...]).
         if cq.get("consensus"):
-            cq["consensus"] = list(dict.fromkeys(cq["consensus"]))
+            cq["consensus"] = list(dict.fromkeys(_normalize_to_list(cq["consensus"])))
         if cq.get("differences"):
-            cq["differences"] = list(dict.fromkeys(cq["differences"]))
+            cq["differences"] = list(dict.fromkeys(_normalize_to_list(cq["differences"])))
 
     if total_removed:
         print(f"  ⚠ 患者 {pid}: 去除 {total_removed} 条重复推荐", file=sys.stderr)
@@ -1374,7 +1190,149 @@ def _extract_patient_list(batch_data: dict) -> list[dict]:
                     "differences": p.pop("differences", []),
                 }
             ]
+        # batch 007-009 new format: guidelines dict → clinical_questions array
+        elif (
+            not p.get("clinical_questions")
+            and isinstance(p.get("guidelines"), dict)
+        ):
+            _convert_guidelines_dict_format(p)
     return [_deduplicate_guideline_results(p) for p in patients]
+
+
+def _convert_guidelines_dict_format(p: dict) -> None:
+    """将 batch 007-009 的 {guidelines: {org: {...}}} 格式转换为标准
+    {clinical_questions: [{guideline_results: [...]}]} 格式。原地修改。
+    """
+    retrieval_sources = p.get("retrieval_sources", [])
+    guideline_results = []
+    for org_name, info in (p.get("guidelines") or {}).items():
+        if not isinstance(info, dict):
+            continue
+        # 从 retrieval_sources 按前缀匹配 org 找源文件路径
+        src = next(
+            (
+                s
+                for s in retrieval_sources
+                if isinstance(s, str) and s.startswith(f"{org_name}/")
+            ),
+            "",
+        )
+        # 去除 "(line 551, 825+)" 等尾部注释
+        src_file = re.sub(r"\s*\([^)]*\)\s*$", "", src).strip()
+        guideline_results.append(
+            {
+                "guideline": org_name,
+                "version": info.get("guideline_version", ""),
+                "recommendation": info.get("recommendation", ""),
+                "evidence_level": info.get("evidence_level", ""),
+                "source_file": src_file,
+                "source_lines": "",
+            }
+        )
+    consensus = p.get("cross_guideline_consensus", "")
+    # 把 clinical_summary 回填到 diagnosis_summary（若未设置）
+    if "clinical_summary" in p and not p.get("diagnosis_summary"):
+        p["diagnosis_summary"] = p["clinical_summary"]
+    p["clinical_questions"] = [
+        {
+            "question": "",
+            "guideline_results": guideline_results,
+            "consensus": consensus,
+            "differences": "",
+        }
+    ]
+
+
+# ─── index 子命令 ─────────────────────────────────────────────────────────────
+
+
+def cmd_index(args):
+    """index subcommand -- build QMD index and inject Context metadata."""
+    kb_root = resolve_kb_root(getattr(args, "kb_root", None))
+    print(f"知识库路径: {kb_root}")
+    force = getattr(args, "force", False)
+
+    orgs_found = []
+    for org_dir in sorted(kb_root.iterdir()):
+        if not org_dir.is_dir() or org_dir.name.startswith("."):
+            continue
+        extracted_dir = org_dir / "extracted"
+        if not extracted_dir.exists():
+            continue
+        md_files = sorted(extracted_dir.glob("*.md"))
+        if not md_files:
+            continue
+        orgs_found.append((org_dir.name, org_dir, md_files))
+
+    if not orgs_found:
+        print("No extracted/*.md files found", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Found {len(orgs_found)} organizations\n")
+
+    for org_name, org_dir, md_files in orgs_found:
+        extracted_dir = org_dir / "extracted"
+        cmd = [
+            "qmd", "collection", "add",
+            str(extracted_dir),
+            "--name", org_name,
+            "--mask", "**/*.md",
+        ]
+        if force:
+            cmd.append("--force")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            if "already exists" in result.stderr and not force:
+                print(f"  collection: {org_name} (already exists, skipping)")
+            else:
+                print(result.stderr, file=sys.stderr)
+                raise subprocess.CalledProcessError(result.returncode, cmd)
+        else:
+            print(f"  collection: {org_name}")
+
+    print("\nGenerating embeddings...")
+    embed_cmd = ["qmd", "embed"]
+    if force:
+        embed_cmd.append("-f")
+    result = subprocess.run(embed_cmd)
+    if result.returncode not in (0, 134):  # 134 = Metal GPU exit crash (macOS, benign)
+        raise subprocess.CalledProcessError(result.returncode, embed_cmd)
+
+    print("\nInjecting contexts...")
+    for org_name, org_dir, md_files in orgs_found:
+        ds_path = org_dir / "data_structure.md"
+        if ds_path.exists():
+            first_line = ds_path.read_text(encoding="utf-8").split("\n")[0]
+            org_desc = first_line.lstrip("# ").strip() or org_name
+        else:
+            org_desc = org_name
+
+        subprocess.run(
+            ["qmd", "context", "add", f"qmd://{org_name}", org_desc],
+            check=True,
+        )
+        print(f"  context: {org_name} = {org_desc}")
+
+        # Use `qmd ls` to get actual normalized URLs (qmd lowercases filenames)
+        ls_result = subprocess.run(
+            ["qmd", "ls", org_name], capture_output=True, text=True
+        )
+        for line in ls_result.stdout.splitlines():
+            parts = line.split()
+            if not parts or not parts[-1].startswith("qmd://"):
+                continue
+            url = parts[-1]
+            stem = url.split("/")[-1].removesuffix(".md")
+            prefix = org_name.lower() + "-"
+            if stem.lower().startswith(prefix):
+                stem = stem[len(prefix):]
+            file_desc = f"{org_name} {stem.replace('-', ' ')}"
+            subprocess.run(
+                ["qmd", "context", "add", url, file_desc],
+                check=True,
+            )
+
+    print(f"\nIndex complete: {len(orgs_found)} organizations")
 
 
 # ─── merge 子命令 ─────────────────────────────────────────────────────────────
@@ -1393,8 +1351,10 @@ def cmd_merge(args):
             for p in pdata.get("patients", []):
                 pid = p.get("patient_id")
                 if pid:
+                    # 同时登记原大小写与 upper-case 规范键，兼容大小写不一致的批次输出
                     patient_lookup[pid] = p
-            print(f"已加载患者元数据: {len(patient_lookup)} 位患者")
+                    patient_lookup[pid.upper()] = p
+            print(f"已加载患者元数据: {len(set(id(v) for v in patient_lookup.values()))} 位患者")
         else:
             print(f"  ⚠ patients.json 不存在: {patients_path}", file=sys.stderr)
 
@@ -1429,7 +1389,9 @@ def cmd_merge(args):
 
             # 回注患者元数据（仅填充缺失字段）
             if patient_lookup:
-                source = patient_lookup.get(pid)
+                source = patient_lookup.get(pid) or patient_lookup.get(
+                    (pid or "").upper()
+                )
                 if source:
                     for field in (
                         "patient_name",
@@ -1438,7 +1400,9 @@ def cmd_merge(args):
                         "diagnosis_summary",
                     ):
                         if not result.get(field):
-                            val = source.get(field)
+                            val = source.get(field) or _synthesize_from_patient(
+                                source, field
+                            )
                             if val:
                                 result[field] = val
                 elif pid:
@@ -1524,8 +1488,7 @@ def _check_batch_depth_decay(results: list) -> list:
             batch_stats[batch] = 0
         for q in r.get("clinical_questions", []):
             for gr in q.get("guideline_results", []):
-                for entry in gr.get("execution_log", []):
-                    batch_stats[batch] += entry.get("match_count", 0)
+                batch_stats[batch] += len(gr.get("retrieval_sources", []))
 
     sorted_batches = sorted(batch_stats.items())
     if len(sorted_batches) < 3:
@@ -1575,166 +1538,64 @@ def _check_org_coverage(results: list[dict], known_orgs: list[str]) -> list[str]
     return warnings
 
 
-def _parse_prompt_commands(prompt_text: str) -> list:
-    """从 batch prompt 中提取所有 CMD-* 标记的 grep 命令。
-
-    Returns: [{"cmd_id": "CMD-P001-NCCN-01", "command": "grep ...",
-               "patient_index": 1, "org": "NCCN", "seq": 1}]
-    """
-    pattern = r"(CMD-P(\d+)-([\w-]+)-(\d+)):\s*(grep\s+.+)"
-    results = []
-    for match in re.finditer(pattern, prompt_text):
-        results.append(
-            {
-                "cmd_id": match.group(1),
-                "patient_index": int(match.group(2)),
-                "org": match.group(3),
-                "seq": int(match.group(4)),
-                "command": match.group(5).strip(),
-            }
-        )
-    return results
-
-
-def _verify_snippet(snippet: str, source_file: str, kb_root: str) -> bool:
-    """验证 snippet 是否存在于知识库文件中。
-
-    遍历 kb_root/*/extracted/ 查找 source_file，规范化空白后做子串匹配。
-    """
-    if not snippet or not source_file:
-        return False
-
-    kb_path = Path(kb_root)
-    for org_dir in kb_path.iterdir():
-        if not org_dir.is_dir():
-            continue
-        candidate = org_dir / "extracted" / source_file
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-            norm_snippet = re.sub(r"\s+", " ", snippet.strip())
-            norm_content = re.sub(r"\s+", " ", content)
-            if norm_snippet in norm_content:
-                return True
-    return False
-
-
 def _verify_batch_results(
     prompt_text: str,
     batch_data: dict,
     kb_root: str = "",
-    config: "ProfileConfig | None" = None,
 ) -> tuple:
-    """验证单个批次的执行证据。
+    """Verify batch results quality.
+
+    V3: Citation coverage (>= 50% of pre-retrieved chunks cited)
+    V4: Contradiction detection (no retrieval sources but has recommendation)
 
     Returns: (errors: list[str], warnings: list[str])
     """
     errors = []
     warnings = []
 
-    # 从 prompt 提取所有 CMD-ID
-    prompt_cmds = _parse_prompt_commands(prompt_text)
-    prompt_cmd_ids = {c["cmd_id"] for c in prompt_cmds}
-
-    # 按患者分组 prompt 命令数
-    patient_prompt_counts = {}
-    for c in prompt_cmds:
-        pi = c["patient_index"]
-        patient_prompt_counts[pi] = patient_prompt_counts.get(pi, 0) + 1
-
-    # 从 JSON 提取所有 execution_log 中的 CMD-ID
-    json_cmd_ids = set()
-    json_cmd_details = {}  # cmd_id -> {match_count, snippet, org}
-
     for result in _extract_patient_list(batch_data):
         pid = result.get("patient_id", "?")
 
-        # V2: 计数一致性 — 通过 execution_log 中的 CMD-ID 前缀推断 patient_index
-        exec_summary = result.get("execution_summary", {})
-        claimed_prompt_count = exec_summary.get("total_commands_in_prompt", 0)
-
-        # 从该患者的 execution_log 中提取 CMD-ID 前缀来确定 patient_index
-        patient_cmd_ids = []
-        for q in result.get("clinical_questions", []):
-            for gr in q.get("guideline_results", []):
-                for entry in gr.get("execution_log", []):
-                    patient_cmd_ids.append(entry.get("cmd_id", ""))
-
-        patient_idx = None
-        if patient_cmd_ids:
-            m = re.match(r"CMD-P(\d+)-", patient_cmd_ids[0])
-            if m:
-                patient_idx = int(m.group(1))
-
-        if patient_idx is not None:
-            actual_prompt_count = patient_prompt_counts.get(patient_idx, 0)
-            if actual_prompt_count > 0 and claimed_prompt_count != actual_prompt_count:
-                errors.append(
-                    f"[{pid}] total_commands_in_prompt={claimed_prompt_count} "
-                    f"但 prompt 实际有 {actual_prompt_count} 条命令"
-                )
-
-        # 如果患者完全没有 execution_log，也报错（slim 模式跳过，不要求 execution_log）
-        if (
-            not patient_cmd_ids
-            and exec_summary
-            and not (config and config.skip_snippet_verify)
-        ):
-            errors.append(
-                f"[{pid}] 无 execution_log 条目（execution_summary 存在但无执行记录）"
+        # V3: Citation coverage
+        citation_coverage = result.get("citation_coverage", None)
+        if isinstance(citation_coverage, str):
+            citation_coverage = None  # skip string-formatted coverage from older batches
+        if citation_coverage is not None and citation_coverage < MIN_CITATION_COVERAGE:
+            warnings.append(
+                f"[{pid}] Low citation coverage "
+                f"({citation_coverage:.0%}, require >= {MIN_CITATION_COVERAGE:.0%})"
             )
 
         for q in result.get("clinical_questions", []):
             for gr in q.get("guideline_results", []):
                 org = gr.get("guideline", "")
                 rec = gr.get("recommendation", "")
+                sources = gr.get("retrieval_sources", [])
 
-                for entry in gr.get("execution_log", []):
-                    cmd_id = entry.get("cmd_id", "")
-                    json_cmd_ids.add(cmd_id)
-                    json_cmd_details[cmd_id] = {
-                        "match_count": entry.get("match_count", 0),
-                        "snippet": entry.get("first_match_snippet", ""),
-                        "org": org,
-                        "recommendation": rec,
-                        "source_file": gr.get("source_file", ""),
-                        "patient_id": pid,
-                    }
-
-    # V1: 命令覆盖率（slim 模式跳过，不要求 execution_log）
-    if not (config and config.skip_snippet_verify):
-        missing_cmds = prompt_cmd_ids - json_cmd_ids
-        for cmd_id in sorted(missing_cmds):
-            errors.append(f"{cmd_id} 未在 execution_log 中找到")
-
-    # V3: snippet 真实性（需要 kb_root）
-    if kb_root and not (config and config.skip_snippet_verify):
-        for cmd_id, detail in json_cmd_details.items():
-            snippet = detail["snippet"]
-            source_file = detail["source_file"]
-            if snippet and source_file:
-                if not _verify_snippet(snippet, source_file, kb_root):
-                    errors.append(
-                        f'[{detail["patient_id"]}] snippet "{snippet[:40]}..." '
-                        f"在 {source_file} 中未找到"
+                # V4: No retrieval sources but has recommendation
+                if not sources and len(rec) > 50:
+                    warnings.append(
+                        f"[{pid}] {org} no retrieval sources cited "
+                        f"but has recommendation ({len(rec)} chars)"
                     )
 
-    # V4: 空匹配矛盾
-    for cmd_id, detail in json_cmd_details.items():
-        if detail["match_count"] == 0 and len(detail["recommendation"]) > 50:
-            warnings.append(
-                f"[{detail['patient_id']}] {cmd_id} match_count=0 "
-                f"但 {detail['org']} 有推荐内容 ({len(detail['recommendation'])}字)"
-            )
+                if not rec:
+                    errors.append(f"[{pid}] {org} empty recommendation")
+
+                src_file = gr.get("source_file", "")
+                if not src_file:
+                    warnings.append(f"[{pid}] {org} missing source file")
+
+            if not q.get("consensus"):
+                warnings.append(f"[{pid}] missing consensus analysis")
+            if not q.get("differences"):
+                warnings.append(f"[{pid}] missing difference analysis")
 
     return errors, warnings
 
 
 def cmd_verify_batch(args):
     """verify-batch 子命令入口 — 验证批次执行证据的真实性"""
-    config = get_profile(getattr(args, "profile", "full"))
     input_dir = Path(args.input_dir).resolve()
     kb_root = ""
     if hasattr(args, "kb_root") and args.kb_root:
@@ -1772,8 +1633,7 @@ def cmd_verify_batch(args):
             continue
 
         errors, warns = _verify_batch_results(
-            prompt_text, batch_data, kb_root, config=config
-        )
+            prompt_text, batch_data, kb_root)
 
         if errors:
             total_fail += 1
@@ -1790,21 +1650,8 @@ def cmd_verify_batch(args):
                 print(f"    ⚠ {w}")
         else:
             total_pass += 1
-            prompt_cmds = _parse_prompt_commands(prompt_text)
-            # 统计 JSON 中实际记录的 CMD-ID 数
-            # _verify_batch_results 已通过 _extract_patient_list 原地包装了
-            # batch_data，此处直接读取已变换的 results（避免重复调用）
-            transformed = batch_data.get("results") or batch_data.get("patients", [])
-            json_cmd_count = sum(
-                len(entry.get("execution_log", []))
-                for r in transformed
-                for q in r.get("clinical_questions", [])
-                for entry in q.get("guideline_results", [])
-            )
-            print(f"  {bf.stem}: ✓ PASS ({json_cmd_count}/{len(prompt_cmds)} 命令)")
+            print(f"  {bf.stem}: ✓ PASS")
 
-    if not kb_root:
-        print("  ℹ V3 snippet 真实性验证已跳过（未提供 --kb-root）")
     print(f"\n总结: {total_pass} PASS, {total_fail} FAIL, {total_warn} WARN")
     if failed_batches:
         print(f"建议重新执行: {', '.join(failed_batches)}")
@@ -1814,7 +1661,6 @@ def cmd_verify_batch(args):
 
 def cmd_validate(args):
     """validate 子命令入口 — 检查 rag_results.json 质量与完整性"""
-    config = get_profile(getattr(args, "profile", "full"))
     input_path = Path(args.input).resolve()
     if not input_path.exists():
         print(f"文件不存在: {input_path}", file=sys.stderr)
@@ -1867,7 +1713,7 @@ def cmd_validate(args):
             for g in grs:
                 rec = g.get("recommendation", "")
                 total_len += len(rec)
-                if len(rec) < config.min_rec_length:
+                if len(rec) < MIN_REC_LENGTH:
                     warnings.append(
                         f"[{pid}] Q{qi} {g.get('guideline', '')} 推荐过短 ({len(rec)}字)"
                     )
@@ -1879,16 +1725,29 @@ def cmd_validate(args):
                     warnings.append(
                         f"[{pid}] Q{qi} {g.get('guideline', '')} 缺失来源文件"
                     )
+                if not g.get("retrieval_sources"):
+                    warnings.append(
+                        f"[{pid}] Q{qi} {g.get('guideline', '')} 缺失检索来源"
+                    )
 
             if not q.get("consensus"):
                 warnings.append(f"[{pid}] Q{qi} 缺失共识分析")
             if not q.get("differences"):
                 warnings.append(f"[{pid}] Q{qi} 缺失差异分析")
 
+        # citation_coverage check
+        cov = r.get("citation_coverage")
+        if isinstance(cov, str):
+            cov = None  # skip string-formatted coverage from older batches
+        if cov is not None and cov < MIN_CITATION_COVERAGE:
+            warnings.append(
+                f"[{pid}] 引用覆盖率过低 ({cov:.0%}, 要求 >= 50%)"
+            )
+
         rec_lengths.append((pid, total_len))
 
     # 跨患者一致性：检测质量下降
-    if not config.skip_anti_laziness and len(rec_lengths) >= 3:
+    if len(rec_lengths) >= 3:
         lengths = [l for _, l in rec_lengths if l > 0]
         if lengths:
             avg_len = sum(lengths) / len(lengths)
@@ -1898,14 +1757,13 @@ def cmd_validate(args):
                         f"[{pid}] 推荐总长度异常偏短 ({length}字 vs 平均 {avg_len:.0f}字)"
                     )
 
-    if not config.skip_anti_laziness:
-        # 跨批次相似度检测 (D9)
-        cross_warnings = _check_cross_batch_similarity(results)
-        warnings.extend(cross_warnings)
+    # 跨批次相似度检测 (D9)
+    cross_warnings = _check_cross_batch_similarity(results)
+    warnings.extend(cross_warnings)
 
-        # 批次深度衰减检测 (L4)
-        depth_warnings = _check_batch_depth_decay(results)
-        warnings.extend(depth_warnings)
+    # 批次深度衰减检测 (L4)
+    depth_warnings = _check_batch_depth_decay(results)
+    warnings.extend(depth_warnings)
 
     # 组织覆盖率检测 (§1.8)
     kb_profile_path = getattr(args, "kb_profile", None)
@@ -1978,14 +1836,180 @@ def md_escape(text: str) -> str:
     return text
 
 
+def md_escape_path(path: str) -> str:
+    """仅对路径做表格最小转义（保留下划线等）。"""
+    if not path:
+        return ""
+    return path.replace("|", "\\|").replace("\n", " ").replace("\r", "")
+
+
+def _normalize_to_list(value) -> list[str]:
+    """将字符串或列表统一规范化为非空字符串列表。
+
+    字符串按常见分隔符（；;。\\n）切分。防御 LLM 输出 consensus/differences
+    为字符串而非列表导致 Markdown 渲染逐字拆分。
+    """
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str):
+        import re as _re
+        parts = _re.split(r"[；;。\n]+", value.strip())
+        return [p.strip() for p in parts if p.strip()]
+    return []
+
+
+_EVIDENCE_LEVEL_MEANINGS = [
+    # CSCO
+    (re.compile(r"1\s*A\s*类"), "高级别循证证据+专家共识+可及性好（CSCO最高推荐）"),
+    (re.compile(r"1\s*B\s*类"), "高级别循证证据+专家共识（CSCO）"),
+    (re.compile(r"2\s*A\s*类"), "中等循证证据+专家共识（CSCO）"),
+    (re.compile(r"2\s*B\s*类"), "中等循证证据+部分共识（CSCO）"),
+    (re.compile(r"[^A-Za-z]3\s*类"), "CSCO 循证证据有限"),
+    (re.compile(r"I级推荐"), "CSCO I级推荐"),
+    (re.compile(r"II级推荐"), "CSCO II级推荐"),
+    (re.compile(r"III级推荐"), "CSCO III级推荐"),
+    # NCCN
+    (re.compile(r"Category\s*1\b"), "NCCN 高级别循证+统一共识"),
+    (re.compile(r"Category\s*2A"), "NCCN 中等循证+统一共识"),
+    (re.compile(r"Category\s*2B"), "NCCN 中等循证+部分共识"),
+    (re.compile(r"Category\s*3"), "NCCN 存在主要分歧"),
+    # ESMO
+    (re.compile(r"\bI\s*,\s*A\b"), "ESMO 高级别证据+强推荐"),
+    (re.compile(r"\bII\s*,\s*B\b"), "ESMO 中等证据+推荐"),
+    (re.compile(r"\bIII\s*,\s*C\b"), "ESMO 低级别证据+可选"),
+    (re.compile(r"\bIV\s*,\s*D\b"), "ESMO 专家意见推荐"),
+    # JGCA / CACA
+    (re.compile(r"Strong|强推荐"), "JGCA/CACA 强推荐"),
+    (re.compile(r"Weak|弱推荐"), "JGCA/CACA 弱推荐"),
+    # 通用
+    (re.compile(r"不适用"), "本指南不覆盖该临床问题"),
+]
+
+
+def _evidence_level_meaning(level_text: str) -> str:
+    """根据证据等级文本返回含义说明；匹配不到返回空字符串。"""
+    if not level_text:
+        return ""
+    for pattern, meaning in _EVIDENCE_LEVEL_MEANINGS:
+        if pattern.search(level_text):
+            return meaning
+    return ""
+
+
+_SITE_TO_DISEASE = {
+    "胃": "胃癌",
+    "EGJ": "胃食管交界癌",
+    "食管胃": "胃食管交界癌",
+    "升结肠": "结肠癌",
+    "横结肠": "结肠癌",
+    "降结肠": "结肠癌",
+    "乙状结肠": "结肠癌",
+    "结肠": "结肠癌",
+    "直肠": "直肠癌",
+    "AC": "结肠癌",
+    "SC": "结肠癌",
+}
+
+
+def _synthesize_from_patient(p: dict, field: str) -> str:
+    """从 patients.json 原始字段合成缺失的诊断元数据。"""
+    if field == "disease_type":
+        site = (p.get("primary_site") or "").strip()
+        for kw, disease in _SITE_TO_DISEASE.items():
+            if kw in site:
+                return disease
+        return ""
+    if field == "diagnosis_summary":
+        parts = []
+        gender = p.get("gender") or ""
+        age = p.get("age") or ""
+        if gender or age:
+            parts.append(f"{gender}性，{age}岁" if gender and age else (gender or str(age)))
+        site = p.get("primary_site") or ""
+        patho = p.get("pathology") or ""
+        if site:
+            parts.append(site)
+        if patho:
+            parts.append(patho)
+        prefix = p.get("staging_prefix") or ""
+        t = p.get("t_stage") or ""
+        n = p.get("n_stage") or ""
+        m = p.get("m_stage") or ""
+        if any([t, n, m]):
+            stage = f"{prefix}{t}{n}{m}".strip()
+            if stage:
+                parts.append(stage)
+        m_sites = p.get("m_sites") or ""
+        if m_sites and m_sites != "无":
+            parts.append(f"转移部位：{m_sites}")
+        resp = p.get("response") or ""
+        if resp and resp not in ("不适用", "无"):
+            parts.append(f"治疗反应：{resp}")
+        comorb = p.get("comorbidities") or ""
+        if comorb and comorb not in ("无", ""):
+            parts.append(f"合并症：{comorb}")
+        biomol = p.get("biopsy_molecular") or ""
+        if biomol:
+            parts.append(f"分子病理：{biomol}")
+        return "；".join(parts) if parts else ""
+    return ""
+
+
+def _canonical_evidence_key(level_text: str) -> str:
+    """抽取证据等级的规范标签作为去重 key。
+
+    例：'I级推荐（1A类）' → '1A类'；'Category 2A（围手术期化疗）' → 'Category 2A'。
+    匹配不到返回原文作为 fallback。
+    """
+    if not level_text:
+        return ""
+    tag_patterns = [
+        r"Category\s*[123]A?B?",
+        r"[123]\s*A\s*类",
+        r"[123]\s*B\s*类",
+        r"[^A-Za-z][123]\s*类",
+        r"\b[IV]+\s*,\s*[A-E]\b",
+        r"Strong|强推荐",
+        r"Weak|弱推荐",
+        r"不适用",
+    ]
+    for pat in tag_patterns:
+        m = re.search(pat, level_text)
+        if m:
+            return re.sub(r"\s+", "", m.group(0))
+    return level_text.strip()
+
+
+def _is_not_applicable(gr: dict) -> bool:
+    """判断 guideline_result 是否标记为本病种不适用。"""
+    level = (gr.get("evidence_level") or "").strip()
+    rec = (gr.get("recommendation") or "").strip()
+    # 覆盖常见形式："不适用"、"不适用（...）"、"知识库中无..."
+    if "不适用" in level:
+        return True
+    if rec.startswith("不适用"):
+        return True
+    return False
+
+
 def _prepare_patient_rows(data: dict) -> list[dict]:
-    """从 rag_results 中提取患者行数据，返回纯 POD 结构。"""
+    """从 rag_results 中提取患者行数据，返回纯 POD 结构。
+
+    对 evidence_level/recommendation 标为"不适用"的 guideline_result 聚合为
+    compact 注释，不再单独渲染大段"不适用"占位。
+    """
     rows = []
     for result in data.get("results", []):
         questions = []
         for q in result.get("clinical_questions", []):
             guidelines = []
+            skipped_orgs = []
             for gr in q.get("guideline_results", []):
+                if _is_not_applicable(gr):
+                    org = gr.get("guideline", "")
+                    if org:
+                        skipped_orgs.append(org)
+                    continue
                 guidelines.append(
                     {
                         "name": gr.get("guideline", ""),
@@ -2001,8 +2025,9 @@ def _prepare_patient_rows(data: dict) -> list[dict]:
                     "question": q.get("question", ""),
                     "guidelines": guidelines,
                     "evidence_table": [],
-                    "consensus": q.get("consensus", []),
-                    "differences": q.get("differences", []),
+                    "consensus": _normalize_to_list(q.get("consensus")),
+                    "differences": _normalize_to_list(q.get("differences")),
+                    "skipped_orgs": skipped_orgs,
                 }
             )
         rows.append(
@@ -2095,7 +2120,9 @@ def generate_md(data: dict, output_path: Path):
                 source = g["source_file"]
                 slines = g["source_lines"]
                 source_display = (
-                    f"{md_escape(source)} L{slines}" if slines else md_escape(source)
+                    f"{md_escape_path(source)} L{slines}"
+                    if slines
+                    else md_escape_path(source)
                 )
                 lines.append("| 属性 | 内容 |")
                 lines.append("|------|------|")
@@ -2107,6 +2134,13 @@ def generate_md(data: dict, output_path: Path):
                 if g["evidence_level"]:
                     all_evidence_entries.append((g["name"], g["evidence_level"]))
 
+            if q.get("skipped_orgs"):
+                orgs = "、".join(q["skipped_orgs"])
+                lines.append(
+                    f"> **指南覆盖说明**：{orgs} 的本知识库版本不覆盖本病种，已略去。"
+                )
+                lines.append("")
+
             if any(g["evidence_level"] for g in q["guidelines"]):
                 lines.append("#### 证据等级对照")
                 lines.append("")
@@ -2114,8 +2148,9 @@ def generate_md(data: dict, output_path: Path):
                 lines.append("|------|----------|------|")
                 for g in q["guidelines"]:
                     if g["evidence_level"]:
+                        meaning = _evidence_level_meaning(g["evidence_level"]) or "—"
                         lines.append(
-                            f"| {md_escape(g['name'])} | {md_escape(g['evidence_level'])} | — |"
+                            f"| {md_escape(g['name'])} | {md_escape(g['evidence_level'])} | {md_escape(meaning)} |"
                         )
                 lines.append("")
 
@@ -2140,14 +2175,19 @@ def generate_md(data: dict, output_path: Path):
         lines.append("")
         lines.append("以下汇总本报告中出现的所有证据等级体系及其含义。")
         lines.append("")
-        seen = set()
+        seen_canonical: set = set()
         lines.append("| 体系 | 等级 | 含义 |")
         lines.append("|------|------|------|")
         for gname, level in all_evidence_entries:
-            key = (gname, level)
-            if key not in seen:
-                seen.add(key)
-                lines.append(f"| {md_escape(gname)} | {md_escape(level)} | — |")
+            canonical = _canonical_evidence_key(level)
+            key = (gname, canonical)
+            if key in seen_canonical or canonical == "不适用":
+                continue
+            seen_canonical.add(key)
+            meaning = _evidence_level_meaning(level) or "—"
+            lines.append(
+                f"| {md_escape(gname)} | {md_escape(canonical or level)} | {md_escape(meaning)} |"
+            )
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -2237,12 +2277,6 @@ def main():
         default=80000,
         help="单个 prompt 最大 token 数 (默认 80000)",
     )
-    p_orch.add_argument(
-        "--profile",
-        choices=["full", "slim"],
-        default="full",
-        help="处理模式 (默认 full，slim 适用于小模型)",
-    )
 
     # merge
     p_merge = sub.add_parser("merge", help="合并批次结果为 rag_results.json")
@@ -2265,24 +2299,17 @@ def main():
     p_validate.add_argument(
         "--kb-profile", help="orchestration_plan.json 路径（可选，用于组织覆盖率检查）"
     )
-    p_validate.add_argument(
-        "--profile",
-        choices=["full", "slim"],
-        default="full",
-        help="验证模式 (默认 full)",
-    )
+
+    # index
+    p_index = sub.add_parser("index", help="Build QMD index and inject Context metadata")
+    p_index.add_argument("--kb-root", help="Knowledge base root directory")
+    p_index.add_argument("--force", action="store_true", help="Force rebuild index")
 
     # verify-batch
     p_verify = sub.add_parser("verify-batch", help="验证批次执行证据的真实性")
     p_verify.add_argument("--input-dir", required=True, help="批次结果所在目录")
     p_verify.add_argument(
         "--kb-root", default=None, help="知识库根路径（可选，启用 snippet 校验）"
-    )
-    p_verify.add_argument(
-        "--profile",
-        choices=["full", "slim"],
-        default="full",
-        help="验证模式 (默认 full)",
     )
 
     # generate
@@ -2307,6 +2334,8 @@ def main():
         cmd_merge(args)
     elif args.command == "validate":
         cmd_validate(args)
+    elif args.command == "index":
+        cmd_index(args)
     elif args.command == "verify-batch":
         cmd_verify_batch(args)
     elif args.command == "generate":
