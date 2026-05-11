@@ -1,18 +1,14 @@
 ---
+gsd_state_version: 1.0
 milestone: v3.1
-name: async-pipeline
+milestone_name: milestone
 status: planning
-current_phase: 1
-current_plan: null
-phases_total: 4
-phases_complete: 0
-plans_total: 0
-plans_complete: 0
-nodes_total: 0
-nodes_complete: 0
-requirements_total: 37
-requirements_mapped: 37
-last_updated: 2026-05-11
+last_updated: "2026-05-11T09:29:24.215Z"
+progress:
+  total_phases: 4
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
 ---
 
 # STATE: medical-guidelines-suite
