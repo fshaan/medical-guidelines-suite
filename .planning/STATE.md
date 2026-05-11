@@ -2,13 +2,14 @@
 gsd_state_version: 1.0
 milestone: v3.1
 milestone_name: milestone
-status: planning
-last_updated: "2026-05-11T09:29:24.215Z"
+status: executing
+last_updated: "2026-05-11T22:41:44Z"
 progress:
   total_phases: 4
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
+  total_plans: 3
+  completed_plans: 1
+  percent: 33
 ---
 
 # STATE: medical-guidelines-suite
@@ -22,9 +23,9 @@ progress:
 ## Current Position
 
 - **Phase**: 1 — Async Retriever + KB Metadata Sidecar
-- **Plan**: 未规划（等待 `/gsd-plan-phase 1`）
-- **Status**: Not started (planning)
-- **Progress**: `[░░░░░░░░░░] 0/4 phases · 0/37 requirements delivered`
+- **Plan**: 01-01 ✅ (Async Retriever + KB Metadata Sidecar)
+- **Status**: Plan 01 complete, continuing to Plan 02
+- **Progress**: `[░░░░░░░░░░] 0/4 phases · 1/3 plans in Phase 1 · 0/37 requirements delivered`
 
 ## Performance Metrics
 
@@ -47,10 +48,15 @@ progress:
 - 病种侧车 JSON + synonym_map.yaml（QMD 不支持索引层 metadata filter）
 - 失败语义：部分容错（`_failed/` + 退出码 1）
 - Phase 4 一次性删除 batch 概念（Phase 3 stabilize 一周后）
+- D-01 释义：AsyncQMDService 独立 httpx 路径，同步 QMDService 保留 requests，调用方层面 async-only
+- D-03 默认 Semaphore(8)，注入式 semaphore 参数可覆盖
+- D-04 session retry 仅一次：400或缺header触发re-initialize+重发
 
 ### Todos
 
-- [ ] `/gsd-plan-phase 1` — 拆解 Phase 1 至 plans
+- [x] Plan 01-01: Async Retriever + 依赖管理 — ✅ 完成
+- [ ] Plan 01-02: KB Metadata Sidecar
+- [ ] Plan 01-03: CLI 折叠
 
 ### Blockers
 
@@ -59,8 +65,8 @@ progress:
 ## Session Continuity
 
 - **上次会话**：2026-05-11 PROJECT.md + REQUIREMENTS.md 初始化（brownfield）
-- **本次会话**：2026-05-11 ROADMAP.md 创建（4 phases，37 requirements 全覆盖）
-- **下次会话入口**：`/gsd-plan-phase 1` 启动 Phase 1 规划
+- **本次会话**：2026-05-11 Plan 01-01 执行完成（AsyncQMDService + 7 tests）
+- **下次会话入口**：Plan 01-02（KB Metadata Sidecar）或 `/gsd-execute-phase 1`
 
 ---
 *State initialized: 2026-05-11 after roadmap creation*
