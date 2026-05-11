@@ -23,6 +23,7 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
+from scripts import kb_metadata
 
 # ─── Profile 配置 ────────────────────────────────────────────────────────────
 
@@ -1331,6 +1332,19 @@ def cmd_index(args):
                 ["qmd", "context", "add", url, file_desc],
                 check=True,
             )
+
+    # 病种侧车元数据（Plan 01-03 / KBM-01, KBM-02）
+    try:
+        sidecar = kb_metadata.build_sidecar(kb_root, orgs_found)
+        print(
+            f"\nSidecar metadata: {sidecar['chunks_path'].parent}"
+            f"  ({sidecar['n_chunks']} chunks, {sidecar['n_orgs']} orgs)"
+        )
+    except Exception as exc:
+        print(
+            f"\nWARNING: sidecar metadata generation failed: {exc}",
+            file=sys.stderr,
+        )
 
     print(f"\nIndex complete: {len(orgs_found)} organizations")
 
