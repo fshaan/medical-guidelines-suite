@@ -9,3 +9,7 @@ Input/*.xlsx
 Input/*.md
 .gspowers/
 .omc/
+logs/
+MD_output_test/
+测试/
+Update_Plan.md
