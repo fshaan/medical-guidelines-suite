@@ -1,6 +1,8 @@
-# Medical Guidelines Suite v3.0.0
+# Medical Guidelines Suite v3.0
 
 Clinical guidelines knowledge base builder, retrieval engine, and batch patient report generator.
+
+> **Active milestone — v3.1 async-pipeline (planning, Phase 1 ready to execute)**: 端到端从 ~60min 降到 <10min，引入内网 vLLM + async QMD + 病种侧车元数据，CLI 折叠为 5 子命令。Source of truth: [`docs/refactor_plan_2026-05-11.md`](docs/refactor_plan_2026-05-11.md)。规划文档：[`.planning/`](.planning/)。
 
 ## Installation
 
@@ -109,14 +111,19 @@ medical-guidelines-suite/
 │   └── data_structure_org.md   # Organization index template
 ├── scripts/
 │   ├── retriever.py            # QMD service wrapper (hybrid BM25 + vector + reranking)
-│   ├── extract_all.py          # Batch extraction (Docling → extracted/*.md)
+│   ├── extract_all.py          # Legacy batch extraction (Docling → extracted/*.md)
+│   ├── extract_guidelines.py   # v2 extraction pipeline (MinerU + Docling + VLM)
+│   ├── extraction/             # Extraction modules (pdf/docx/postprocess/vlm_describer)
 │   └── batch_pipeline.py       # Batch patient pipeline (9 subcommands incl. index, verify-batch)
-├── tests/                      # pytest test suite (134 tests)
+├── tests/                      # pytest test suite (173 tests, v3.0 baseline)
 ├── docs/
+│   ├── refactor_plan_2026-05-11.md  # v3.1 async-pipeline source of truth (grill-me 13-round)
 │   ├── v2.3-anti-laziness-spec.md  # v2.3 execution evidence spec
 │   ├── v2.2-fix-plan.md       # v2.2 design spec
 │   ├── v2.2-decisions.md      # Confirmed design decisions (D1-D9)
-│   └── architecture.md        # Engineering review report
+│   ├── architecture.md        # Engineering review report
+│   └── solutions/             # Documented solutions (YAML frontmatter, searchable by module/tag)
+├── .planning/                  # GSD planning artifacts (PROJECT/ROADMAP/REQUIREMENTS/STATE/phases)
 └── examples/
     └── sample_queries.md       # Example clinical questions
 ```
