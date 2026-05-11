@@ -42,7 +42,10 @@
 
 **Duration estimate:** 2 days
 
-**Plans:** TBD
+**Plans:** 3 plans
+- [ ] 01-01-PLAN.md — AsyncQMDService 异步检索类 + 同步类字节级保留（RTR-01..04）
+- [ ] 01-02-PLAN.md — scripts/kb_metadata.py 模块（synonym_map seed + normalize + 双层过滤 + build_sidecar）（KBM-03..06）
+- [ ] 01-03-PLAN.md — cmd_index 接入 build_sidecar 产出三个侧车文件（KBM-01, KBM-02）
 
 ### Phase 2: LLM Client + Schema + Unit Tests
 
@@ -109,7 +112,7 @@ Sequential execution. Phase 3 是关键性能 gate；Phase 4 显式延迟一周�
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Async Retriever + KB Metadata Sidecar | 0/? | Not started | - |
+| 1. Async Retriever + KB Metadata Sidecar | 0/3 | Plans created | - |
 | 2. LLM Client + Schema + Unit Tests | 0/? | Not started | - |
 | 3. Pipeline + run + Interface Extension | 0/? | Not started | - |
 | 4. Delete Batch Concept + Rewrite Tests | 0/? | Not started | - |
