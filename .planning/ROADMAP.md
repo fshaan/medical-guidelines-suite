@@ -112,7 +112,7 @@ Sequential execution. Phase 3 是关键性能 gate；Phase 4 显式延迟一周�
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Async Retriever + KB Metadata Sidecar | 0/3 | Plans created | - |
+| 1. Async Retriever + KB Metadata Sidecar | 3/3 | ✅ Complete | 2026-05-12 |
 | 2. LLM Client + Schema + Unit Tests | 0/? | Not started | - |
 | 3. Pipeline + run + Interface Extension | 0/? | Not started | - |
 | 4. Delete Batch Concept + Rewrite Tests | 0/? | Not started | - |
