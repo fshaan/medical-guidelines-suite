@@ -38,19 +38,16 @@ def test_qmd_service_query_returns_structured_results(mock_post, mock_popen):
     health_resp = MagicMock(status_code=200, json=lambda: {"result": "ok"})
     query_resp = MagicMock(status_code=200, json=lambda: {
         "result": {
-            "content": [
-                {
-                    "type": "text",
-                    "text": json.dumps([
-                        {
-                            "content": "Chemotherapy is recommended for stage IV.",
-                            "path": "NCCN/extracted/NCCN_Gastric_2026.md",
-                            "score": 0.85,
-                            "context": "NCCN gastric guidelines 2026 V2",
-                        }
-                    ]),
-                }
-            ]
+            "structuredContent": {
+                "results": [
+                    {
+                        "snippet": "Chemotherapy is recommended for stage IV.",
+                        "file": "NCCN/extracted/NCCN_Gastric_2026.md",
+                        "score": 0.85,
+                        "context": "NCCN gastric guidelines 2026 V2",
+                    }
+                ]
+            }
         }
     })
     mock_post.side_effect = [health_resp, query_resp]
