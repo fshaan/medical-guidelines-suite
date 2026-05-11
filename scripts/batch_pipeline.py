@@ -463,7 +463,50 @@ def build_queries(patient: dict, features: dict) -> list[str]:
             f"{disease} {' '.join(treatment)} recommended regimen evidence level"
         )
 
+    # 推荐词汇专项查询：CSCO/NCCN 推荐表特有词汇（I级推荐、1A类、Category 1 等）
+    # 只出现在临床推荐表，不出现在参考文献；显著提升推荐表 chunk 的检索命中率
+    stage_str = " ".join(staging[:2]) if staging else ""
+    queries.insert(
+        0,
+        f"{disease} {stage_str} I级推荐 1A类 Category 1 治疗方案 推荐意见".strip(),
+    )
+
     return queries or [f"{disease} treatment recommendation"]
+
+
+# 参考文献 chunk 识别：期刊名、DOI/PMID、形如 "[1] AUTHOR YJ" 的引文
+_REFERENCE_JOURNAL_NAMES = (
+    r"Lancet|N\s*Engl\s*J\s*Med|NEJM|J\s*Clin\s*Oncol|JCO|Ann\s*Oncol|"
+    r"Gastroenterology|BMJ|JAMA|Nat\s*Med|Cancer\s*Cell|Clin\s*Cancer\s*Res|"
+    r"Eur\s*J\s*Cancer|Oncologist|Br\s*J\s*Cancer|Int\s*J\s*Cancer"
+)
+_REFERENCE_LINE_PATTERNS = [
+    re.compile(r"^\s*[\[［]\s*\d+\s*[\]］]\s*[A-Z一-鿿]"),  # [1] XXX
+    re.compile(r"\bet\s*al\.", re.IGNORECASE),  # et al.
+    re.compile(r"\b(?:doi|DOI|PMID|pmid)\s*[:：]", re.IGNORECASE),
+    re.compile(r"\b(?:" + _REFERENCE_JOURNAL_NAMES + r")\b", re.IGNORECASE),
+    re.compile(r"\b(?:19|20)\d{2}[;,]\s*\d+"),  # "2020; 12" 期刊格式
+    re.compile(r"\bSuppl\b|\bvol\b", re.IGNORECASE),
+]
+
+
+def _is_reference_chunk(content: str) -> bool:
+    """判断 chunk 是否主要为参考文献/引文内容。
+
+    规则：>=50% 的非空行命中参考文献特征（期刊名、DOI、[N] AUTHOR、et al.）。
+    """
+    if not content:
+        return False
+    lines = [l.strip() for l in content.split("\n") if l.strip()]
+    if len(lines) < 2:
+        # 单行 chunk：只要命中 2+ 种特征就判为参考文献
+        hits = sum(1 for p in _REFERENCE_LINE_PATTERNS if p.search(content))
+        return hits >= 2
+    ref_count = 0
+    for line in lines:
+        if any(p.search(line) for p in _REFERENCE_LINE_PATTERNS):
+            ref_count += 1
+    return ref_count / len(lines) > 0.5
 
 
 # ─── 临床特征提取 ──────────────────────────────────────────────────────────────
@@ -716,12 +759,14 @@ def generate_batch_prompt(
 
     lines.append("<MANDATORY_RULES>")
     lines.append("1. Carefully read each patient's pre-retrieved results and extract recommendations, evidence levels, and sources")
-    lines.append("2. Each patient must have results for every guideline organization")
-    lines.append('3. If pre-retrieval has no content for a guideline, record: "This guideline does not cover this clinical question"')
+    lines.append("2. Each patient has `relevant_orgs` — ONLY produce recommendations for those guideline organizations. Do NOT include any 'not applicable' entries for the filtered-out orgs (they are pre-filtered because the KB does not cover this disease type).")
+    lines.append('3. If pre-retrieval has no content for a relevant guideline, record: "该指南未检索到与本患者相关的内容" and explain why briefly (one sentence).')
     lines.append("4. Output must be in Simplified Chinese")
     lines.append("5. Recommendations must be based on pre-retrieved results, not fabricated")
     lines.append("6. Must cite which pre-retrieved chunks were used in retrieval_sources")
     lines.append("7. Citation coverage requirement: cite at least 50% of pre-retrieved results")
+    lines.append('8. `guideline_version` format MUST be "{org} {disease}指南{year}" (e.g., "CSCO 胃癌诊疗指南2025"). Do NOT use free-form version strings like "Gastric Cancer 2022 / Pan-Asia 2024".')
+    lines.append('9. `consensus` and `differences` fields MUST be arrays of bullet-point strings (one key point per element), NOT a single long paragraph string.')
     lines.append("</MANDATORY_RULES>\n")
 
     lines.append(f"## Knowledge Base\nPath: {kb_root}\n")
@@ -866,6 +911,8 @@ def cmd_orchestrate(args):
     enriched_patients = []
     total_results = 0
     total_queries = 0
+    total_filtered_refs = 0
+    total_filtered_orgs = 0
 
     with QMDService() as qmd:
         for p in patients:
@@ -873,30 +920,55 @@ def cmd_orchestrate(args):
             queries = build_queries(p, features)
             total_queries += len(queries)
 
+            # Phase 3.1/3.2: 按 disease_type 过滤相关 org（CRC 患者 →
+            # 仅保留 CSCO/NCCN，跳过仅含胃癌指南的 JGCA/CACA/ESMO）
+            relevant_orgs = filter_orgs_by_disease(
+                kb_profile, p.get("disease_type", "")
+            )
+            relevant_org_set = set(relevant_orgs)
+
             retrieval_results = []
             for q in queries:
-                hits = qmd.query(q, top_k=10, min_score=0.3)
+                # Phase 5.4: min_score 0.3 → 0.35（配合参考文献过滤，提高相关性）
+                hits = qmd.query(q, top_k=10, min_score=0.35)
                 retrieval_results.extend(hits)
 
+            # 去重
             seen = set()
             unique_results = []
             for hit in retrieval_results:
                 key = (hit.get("path", ""), hash(hit.get("content", "")))
-                if key not in seen:
-                    seen.add(key)
-                    unique_results.append(hit)
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                # Phase 3.1/3.2: 组织过滤 — 跳过不适用 org 的结果
+                path = hit.get("path", "")
+                org = path.split("/", 1)[0] if "/" in path else ""
+                if relevant_org_set and org and org not in relevant_org_set:
+                    total_filtered_orgs += 1
+                    continue
+
+                # Phase 5.1/5.2: 参考文献 chunk 过滤
+                if _is_reference_chunk(hit.get("content", "")):
+                    total_filtered_refs += 1
+                    continue
+
+                unique_results.append(hit)
 
             total_results += len(unique_results)
             enriched = {
                 **p,
                 "features": features,
                 "retrieval_results": unique_results,
+                "relevant_orgs": relevant_orgs,
             }
             enriched_patients.append(enriched)
 
     print(
         f"Pre-retrieval done: {len(patients)} patients, "
-        f"{total_queries} queries, {total_results} results\n"
+        f"{total_queries} queries, {total_results} results "
+        f"(filtered {total_filtered_refs} refs, {total_filtered_orgs} off-topic orgs)\n"
     )
 
     batch_size = args.batch_size
@@ -1066,10 +1138,12 @@ def _deduplicate_guideline_results(patient: dict) -> dict:
                 total_removed += removed
                 cq["guideline_results"] = unique
 
+        # Normalize string → list first to prevent dict.fromkeys from
+        # iterating characters (previous bug: "各指南一致" → ['各','指',...]).
         if cq.get("consensus"):
-            cq["consensus"] = list(dict.fromkeys(cq["consensus"]))
+            cq["consensus"] = list(dict.fromkeys(_normalize_to_list(cq["consensus"])))
         if cq.get("differences"):
-            cq["differences"] = list(dict.fromkeys(cq["differences"]))
+            cq["differences"] = list(dict.fromkeys(_normalize_to_list(cq["differences"])))
 
     if total_removed:
         print(f"  ⚠ 患者 {pid}: 去除 {total_removed} 条重复推荐", file=sys.stderr)
@@ -1116,7 +1190,57 @@ def _extract_patient_list(batch_data: dict) -> list[dict]:
                     "differences": p.pop("differences", []),
                 }
             ]
+        # batch 007-009 new format: guidelines dict → clinical_questions array
+        elif (
+            not p.get("clinical_questions")
+            and isinstance(p.get("guidelines"), dict)
+        ):
+            _convert_guidelines_dict_format(p)
     return [_deduplicate_guideline_results(p) for p in patients]
+
+
+def _convert_guidelines_dict_format(p: dict) -> None:
+    """将 batch 007-009 的 {guidelines: {org: {...}}} 格式转换为标准
+    {clinical_questions: [{guideline_results: [...]}]} 格式。原地修改。
+    """
+    retrieval_sources = p.get("retrieval_sources", [])
+    guideline_results = []
+    for org_name, info in (p.get("guidelines") or {}).items():
+        if not isinstance(info, dict):
+            continue
+        # 从 retrieval_sources 按前缀匹配 org 找源文件路径
+        src = next(
+            (
+                s
+                for s in retrieval_sources
+                if isinstance(s, str) and s.startswith(f"{org_name}/")
+            ),
+            "",
+        )
+        # 去除 "(line 551, 825+)" 等尾部注释
+        src_file = re.sub(r"\s*\([^)]*\)\s*$", "", src).strip()
+        guideline_results.append(
+            {
+                "guideline": org_name,
+                "version": info.get("guideline_version", ""),
+                "recommendation": info.get("recommendation", ""),
+                "evidence_level": info.get("evidence_level", ""),
+                "source_file": src_file,
+                "source_lines": "",
+            }
+        )
+    consensus = p.get("cross_guideline_consensus", "")
+    # 把 clinical_summary 回填到 diagnosis_summary（若未设置）
+    if "clinical_summary" in p and not p.get("diagnosis_summary"):
+        p["diagnosis_summary"] = p["clinical_summary"]
+    p["clinical_questions"] = [
+        {
+            "question": "",
+            "guideline_results": guideline_results,
+            "consensus": consensus,
+            "differences": "",
+        }
+    ]
 
 
 # ─── index 子命令 ─────────────────────────────────────────────────────────────
@@ -1227,8 +1351,10 @@ def cmd_merge(args):
             for p in pdata.get("patients", []):
                 pid = p.get("patient_id")
                 if pid:
+                    # 同时登记原大小写与 upper-case 规范键，兼容大小写不一致的批次输出
                     patient_lookup[pid] = p
-            print(f"已加载患者元数据: {len(patient_lookup)} 位患者")
+                    patient_lookup[pid.upper()] = p
+            print(f"已加载患者元数据: {len(set(id(v) for v in patient_lookup.values()))} 位患者")
         else:
             print(f"  ⚠ patients.json 不存在: {patients_path}", file=sys.stderr)
 
@@ -1263,7 +1389,9 @@ def cmd_merge(args):
 
             # 回注患者元数据（仅填充缺失字段）
             if patient_lookup:
-                source = patient_lookup.get(pid)
+                source = patient_lookup.get(pid) or patient_lookup.get(
+                    (pid or "").upper()
+                )
                 if source:
                     for field in (
                         "patient_name",
@@ -1272,7 +1400,9 @@ def cmd_merge(args):
                         "diagnosis_summary",
                     ):
                         if not result.get(field):
-                            val = source.get(field)
+                            val = source.get(field) or _synthesize_from_patient(
+                                source, field
+                            )
                             if val:
                                 result[field] = val
                 elif pid:
@@ -1428,6 +1558,8 @@ def _verify_batch_results(
 
         # V3: Citation coverage
         citation_coverage = result.get("citation_coverage", None)
+        if isinstance(citation_coverage, str):
+            citation_coverage = None  # skip string-formatted coverage from older batches
         if citation_coverage is not None and citation_coverage < MIN_CITATION_COVERAGE:
             warnings.append(
                 f"[{pid}] Low citation coverage "
@@ -1605,6 +1737,8 @@ def cmd_validate(args):
 
         # citation_coverage check
         cov = r.get("citation_coverage")
+        if isinstance(cov, str):
+            cov = None  # skip string-formatted coverage from older batches
         if cov is not None and cov < MIN_CITATION_COVERAGE:
             warnings.append(
                 f"[{pid}] 引用覆盖率过低 ({cov:.0%}, 要求 >= 50%)"
@@ -1702,14 +1836,180 @@ def md_escape(text: str) -> str:
     return text
 
 
+def md_escape_path(path: str) -> str:
+    """仅对路径做表格最小转义（保留下划线等）。"""
+    if not path:
+        return ""
+    return path.replace("|", "\\|").replace("\n", " ").replace("\r", "")
+
+
+def _normalize_to_list(value) -> list[str]:
+    """将字符串或列表统一规范化为非空字符串列表。
+
+    字符串按常见分隔符（；;。\\n）切分。防御 LLM 输出 consensus/differences
+    为字符串而非列表导致 Markdown 渲染逐字拆分。
+    """
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str):
+        import re as _re
+        parts = _re.split(r"[；;。\n]+", value.strip())
+        return [p.strip() for p in parts if p.strip()]
+    return []
+
+
+_EVIDENCE_LEVEL_MEANINGS = [
+    # CSCO
+    (re.compile(r"1\s*A\s*类"), "高级别循证证据+专家共识+可及性好（CSCO最高推荐）"),
+    (re.compile(r"1\s*B\s*类"), "高级别循证证据+专家共识（CSCO）"),
+    (re.compile(r"2\s*A\s*类"), "中等循证证据+专家共识（CSCO）"),
+    (re.compile(r"2\s*B\s*类"), "中等循证证据+部分共识（CSCO）"),
+    (re.compile(r"[^A-Za-z]3\s*类"), "CSCO 循证证据有限"),
+    (re.compile(r"I级推荐"), "CSCO I级推荐"),
+    (re.compile(r"II级推荐"), "CSCO II级推荐"),
+    (re.compile(r"III级推荐"), "CSCO III级推荐"),
+    # NCCN
+    (re.compile(r"Category\s*1\b"), "NCCN 高级别循证+统一共识"),
+    (re.compile(r"Category\s*2A"), "NCCN 中等循证+统一共识"),
+    (re.compile(r"Category\s*2B"), "NCCN 中等循证+部分共识"),
+    (re.compile(r"Category\s*3"), "NCCN 存在主要分歧"),
+    # ESMO
+    (re.compile(r"\bI\s*,\s*A\b"), "ESMO 高级别证据+强推荐"),
+    (re.compile(r"\bII\s*,\s*B\b"), "ESMO 中等证据+推荐"),
+    (re.compile(r"\bIII\s*,\s*C\b"), "ESMO 低级别证据+可选"),
+    (re.compile(r"\bIV\s*,\s*D\b"), "ESMO 专家意见推荐"),
+    # JGCA / CACA
+    (re.compile(r"Strong|强推荐"), "JGCA/CACA 强推荐"),
+    (re.compile(r"Weak|弱推荐"), "JGCA/CACA 弱推荐"),
+    # 通用
+    (re.compile(r"不适用"), "本指南不覆盖该临床问题"),
+]
+
+
+def _evidence_level_meaning(level_text: str) -> str:
+    """根据证据等级文本返回含义说明；匹配不到返回空字符串。"""
+    if not level_text:
+        return ""
+    for pattern, meaning in _EVIDENCE_LEVEL_MEANINGS:
+        if pattern.search(level_text):
+            return meaning
+    return ""
+
+
+_SITE_TO_DISEASE = {
+    "胃": "胃癌",
+    "EGJ": "胃食管交界癌",
+    "食管胃": "胃食管交界癌",
+    "升结肠": "结肠癌",
+    "横结肠": "结肠癌",
+    "降结肠": "结肠癌",
+    "乙状结肠": "结肠癌",
+    "结肠": "结肠癌",
+    "直肠": "直肠癌",
+    "AC": "结肠癌",
+    "SC": "结肠癌",
+}
+
+
+def _synthesize_from_patient(p: dict, field: str) -> str:
+    """从 patients.json 原始字段合成缺失的诊断元数据。"""
+    if field == "disease_type":
+        site = (p.get("primary_site") or "").strip()
+        for kw, disease in _SITE_TO_DISEASE.items():
+            if kw in site:
+                return disease
+        return ""
+    if field == "diagnosis_summary":
+        parts = []
+        gender = p.get("gender") or ""
+        age = p.get("age") or ""
+        if gender or age:
+            parts.append(f"{gender}性，{age}岁" if gender and age else (gender or str(age)))
+        site = p.get("primary_site") or ""
+        patho = p.get("pathology") or ""
+        if site:
+            parts.append(site)
+        if patho:
+            parts.append(patho)
+        prefix = p.get("staging_prefix") or ""
+        t = p.get("t_stage") or ""
+        n = p.get("n_stage") or ""
+        m = p.get("m_stage") or ""
+        if any([t, n, m]):
+            stage = f"{prefix}{t}{n}{m}".strip()
+            if stage:
+                parts.append(stage)
+        m_sites = p.get("m_sites") or ""
+        if m_sites and m_sites != "无":
+            parts.append(f"转移部位：{m_sites}")
+        resp = p.get("response") or ""
+        if resp and resp not in ("不适用", "无"):
+            parts.append(f"治疗反应：{resp}")
+        comorb = p.get("comorbidities") or ""
+        if comorb and comorb not in ("无", ""):
+            parts.append(f"合并症：{comorb}")
+        biomol = p.get("biopsy_molecular") or ""
+        if biomol:
+            parts.append(f"分子病理：{biomol}")
+        return "；".join(parts) if parts else ""
+    return ""
+
+
+def _canonical_evidence_key(level_text: str) -> str:
+    """抽取证据等级的规范标签作为去重 key。
+
+    例：'I级推荐（1A类）' → '1A类'；'Category 2A（围手术期化疗）' → 'Category 2A'。
+    匹配不到返回原文作为 fallback。
+    """
+    if not level_text:
+        return ""
+    tag_patterns = [
+        r"Category\s*[123]A?B?",
+        r"[123]\s*A\s*类",
+        r"[123]\s*B\s*类",
+        r"[^A-Za-z][123]\s*类",
+        r"\b[IV]+\s*,\s*[A-E]\b",
+        r"Strong|强推荐",
+        r"Weak|弱推荐",
+        r"不适用",
+    ]
+    for pat in tag_patterns:
+        m = re.search(pat, level_text)
+        if m:
+            return re.sub(r"\s+", "", m.group(0))
+    return level_text.strip()
+
+
+def _is_not_applicable(gr: dict) -> bool:
+    """判断 guideline_result 是否标记为本病种不适用。"""
+    level = (gr.get("evidence_level") or "").strip()
+    rec = (gr.get("recommendation") or "").strip()
+    # 覆盖常见形式："不适用"、"不适用（...）"、"知识库中无..."
+    if "不适用" in level:
+        return True
+    if rec.startswith("不适用"):
+        return True
+    return False
+
+
 def _prepare_patient_rows(data: dict) -> list[dict]:
-    """从 rag_results 中提取患者行数据，返回纯 POD 结构。"""
+    """从 rag_results 中提取患者行数据，返回纯 POD 结构。
+
+    对 evidence_level/recommendation 标为"不适用"的 guideline_result 聚合为
+    compact 注释，不再单独渲染大段"不适用"占位。
+    """
     rows = []
     for result in data.get("results", []):
         questions = []
         for q in result.get("clinical_questions", []):
             guidelines = []
+            skipped_orgs = []
             for gr in q.get("guideline_results", []):
+                if _is_not_applicable(gr):
+                    org = gr.get("guideline", "")
+                    if org:
+                        skipped_orgs.append(org)
+                    continue
                 guidelines.append(
                     {
                         "name": gr.get("guideline", ""),
@@ -1725,8 +2025,9 @@ def _prepare_patient_rows(data: dict) -> list[dict]:
                     "question": q.get("question", ""),
                     "guidelines": guidelines,
                     "evidence_table": [],
-                    "consensus": q.get("consensus", []),
-                    "differences": q.get("differences", []),
+                    "consensus": _normalize_to_list(q.get("consensus")),
+                    "differences": _normalize_to_list(q.get("differences")),
+                    "skipped_orgs": skipped_orgs,
                 }
             )
         rows.append(
@@ -1819,7 +2120,9 @@ def generate_md(data: dict, output_path: Path):
                 source = g["source_file"]
                 slines = g["source_lines"]
                 source_display = (
-                    f"{md_escape(source)} L{slines}" if slines else md_escape(source)
+                    f"{md_escape_path(source)} L{slines}"
+                    if slines
+                    else md_escape_path(source)
                 )
                 lines.append("| 属性 | 内容 |")
                 lines.append("|------|------|")
@@ -1831,6 +2134,13 @@ def generate_md(data: dict, output_path: Path):
                 if g["evidence_level"]:
                     all_evidence_entries.append((g["name"], g["evidence_level"]))
 
+            if q.get("skipped_orgs"):
+                orgs = "、".join(q["skipped_orgs"])
+                lines.append(
+                    f"> **指南覆盖说明**：{orgs} 的本知识库版本不覆盖本病种，已略去。"
+                )
+                lines.append("")
+
             if any(g["evidence_level"] for g in q["guidelines"]):
                 lines.append("#### 证据等级对照")
                 lines.append("")
@@ -1838,8 +2148,9 @@ def generate_md(data: dict, output_path: Path):
                 lines.append("|------|----------|------|")
                 for g in q["guidelines"]:
                     if g["evidence_level"]:
+                        meaning = _evidence_level_meaning(g["evidence_level"]) or "—"
                         lines.append(
-                            f"| {md_escape(g['name'])} | {md_escape(g['evidence_level'])} | — |"
+                            f"| {md_escape(g['name'])} | {md_escape(g['evidence_level'])} | {md_escape(meaning)} |"
                         )
                 lines.append("")
 
@@ -1864,14 +2175,19 @@ def generate_md(data: dict, output_path: Path):
         lines.append("")
         lines.append("以下汇总本报告中出现的所有证据等级体系及其含义。")
         lines.append("")
-        seen = set()
+        seen_canonical: set = set()
         lines.append("| 体系 | 等级 | 含义 |")
         lines.append("|------|------|------|")
         for gname, level in all_evidence_entries:
-            key = (gname, level)
-            if key not in seen:
-                seen.add(key)
-                lines.append(f"| {md_escape(gname)} | {md_escape(level)} | — |")
+            canonical = _canonical_evidence_key(level)
+            key = (gname, canonical)
+            if key in seen_canonical or canonical == "不适用":
+                continue
+            seen_canonical.add(key)
+            meaning = _evidence_level_meaning(level) or "—"
+            lines.append(
+                f"| {md_escape(gname)} | {md_escape(canonical or level)} | {md_escape(meaning)} |"
+            )
         lines.append("")
         lines.append("---")
         lines.append("")

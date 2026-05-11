@@ -193,11 +193,15 @@ def test_build_queries_generates_per_dimension_queries():
 
     queries = build_queries(patient, features)
 
-    assert len(queries) == 3
+    # 4 queries: [recommendation-vocab, staging, molecular, treatment]
+    # The recommendation-vocab query is prepended to prioritize clinical tables
+    # over reference/bibliography sections in QMD retrieval.
+    assert len(queries) == 4
     assert "gastric cancer" in queries[0]
-    assert "T3" in queries[0]
-    assert "HER2+" in queries[1]
-    assert "chemotherapy" in queries[2]
+    assert "I级推荐" in queries[0]  # recommendation vocabulary query
+    assert "T3" in queries[0] or "T3" in queries[1]
+    assert "HER2+" in queries[2]
+    assert "chemotherapy" in queries[3]
 
 
 def test_build_queries_fallback_for_sparse_patient():
