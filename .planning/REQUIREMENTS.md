@@ -98,53 +98,54 @@
 
 ## Traceability
 
-<!-- 由 roadmapper 在 Phase 8 填充。empty initially。 -->
+<!-- 由 roadmapper 填充于 2026-05-11，源：.planning/ROADMAP.md -->
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| RTR-01 | TBD | Pending |
-| RTR-02 | TBD | Pending |
-| RTR-03 | TBD | Pending |
-| RTR-04 | TBD | Pending |
-| KBM-01 | TBD | Pending |
-| KBM-02 | TBD | Pending |
-| KBM-03 | TBD | Pending |
-| KBM-04 | TBD | Pending |
-| KBM-05 | TBD | Pending |
-| KBM-06 | TBD | Pending |
-| LLM-01 | TBD | Pending |
-| LLM-02 | TBD | Pending |
-| LLM-03 | TBD | Pending |
-| LLM-04 | TBD | Pending |
-| LLM-05 | TBD | Pending |
-| PIP-01 | TBD | Pending |
-| PIP-02 | TBD | Pending |
-| PIP-03 | TBD | Pending |
-| PIP-04 | TBD | Pending |
-| PIP-05 | TBD | Pending |
-| PIP-06 | TBD | Pending |
-| CLI-01 | TBD | Pending |
-| CLI-02 | TBD | Pending |
-| CLI-03 | TBD | Pending |
-| CLI-04 | TBD | Pending |
-| CLI-05 | TBD | Pending |
-| CLI-06 | TBD | Pending |
-| CFG-01 | TBD | Pending |
-| CFG-02 | TBD | Pending |
-| CFG-03 | TBD | Pending |
-| QG-01 | TBD | Pending |
-| QG-02 | TBD | Pending |
-| QG-03 | TBD | Pending |
-| QG-04 | TBD | Pending |
-| QG-05 | TBD | Pending |
-| QG-06 | TBD | Pending |
-| QG-07 | TBD | Pending |
+| RTR-01 | Phase 1 | Pending |
+| RTR-02 | Phase 1 | Pending |
+| RTR-03 | Phase 1 | Pending |
+| RTR-04 | Phase 1 | Pending |
+| KBM-01 | Phase 1 | Pending |
+| KBM-02 | Phase 1 | Pending |
+| KBM-03 | Phase 1 | Pending |
+| KBM-04 | Phase 1 | Pending |
+| KBM-05 | Phase 1 | Pending |
+| KBM-06 | Phase 1 | Pending |
+| LLM-01 | Phase 2 | Pending |
+| LLM-02 | Phase 2 | Pending |
+| LLM-03 | Phase 2 | Pending |
+| LLM-04 | Phase 2 | Pending |
+| LLM-05 | Phase 2 | Pending |
+| PIP-01 | Phase 3 | Pending |
+| PIP-02 | Phase 3 | Pending |
+| PIP-03 | Phase 3 | Pending |
+| PIP-04 | Phase 3 | Pending |
+| PIP-05 | Phase 3 | Pending |
+| PIP-06 | Phase 3 | Pending |
+| CLI-01 | Phase 3 | Pending |
+| CLI-02 | Phase 3 | Pending |
+| CLI-03 | Phase 3 | Pending |
+| CLI-04 | Phase 3 | Pending |
+| CLI-05 | Phase 3 | Pending |
+| CLI-06 | Phase 4 | Pending |
+| CFG-01 | Phase 2 | Pending |
+| CFG-02 | Phase 2 | Pending |
+| CFG-03 | Phase 3 | Pending |
+| QG-01 | Phase 3 | Pending |
+| QG-02 | Phase 3 | Pending |
+| QG-03 | Phase 3 | Pending |
+| QG-04 | Phase 3 | Pending |
+| QG-05 | Phase 3 | Pending |
+| QG-06 | Phase 3 | Pending |
+| QG-07 | Phase 4 | Pending |
 
 **Coverage:**
 - v1 requirements: 37 total
-- Mapped to phases: 0 (filled by roadmapper)
-- Unmapped: 37 ⚠️ (pending roadmap)
+- Mapped to phases: 37 ✓
+- Unmapped: 0
+- Distribution: Phase 1 = 10 (RTR×4 + KBM×6), Phase 2 = 7 (LLM×5 + CFG-01, CFG-02), Phase 3 = 18 (PIP×6 + CLI-01..05 + CFG-03 + QG-01..06), Phase 4 = 2 (CLI-06, QG-07)
 
 ---
 *Requirements defined: 2026-05-11 (source: docs/refactor_plan_2026-05-11.md grill-me 13-round closure)*
-*Last updated: 2026-05-11 after initialization*
+*Traceability filled: 2026-05-11 by gsd-roadmapper*
