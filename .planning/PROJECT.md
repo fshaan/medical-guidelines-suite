@@ -4,6 +4,20 @@
 
 基于 QMD 混合检索（BM25 + 向量 + LLM 重排）的多机构医学指南 RAG 系统，为临床决策提供跨指南（CSCO/NCCN/ESMO/JGCA/CACA）的循证推荐对比。当前 v3.0 支持单患者交互式查询与批量患者 Excel 处理两种工作流，所有输出强制简体中文。
 
+## Current Milestone: v3.1 async-pipeline
+
+**Goal:** 把 10 例患者端到端耗时从 ~60min 降到 <10min，同时消除 JSON 引号转义 bug 和结直肠癌病种错配问题。
+
+**Target features:**
+- 异步 QMD 检索（串行 3min → 并发 30-60s）
+- 内网 vLLM + Qwen3.5-35B-A3B 替代人工 LLM（50min → 3-5min）
+- JSON Schema strict 输出（消除引号转义 bug）
+- 病种侧车元数据 + 双层过滤（消除结直肠癌引用胃癌 chunk）
+- per-patient shard 输出 + 部分容错 + `--resume`
+- CLI 从 7 阶段折叠为 4 阶段（parse / run / validate / generate，删 batch 概念）
+
+**Source of truth:** `docs/refactor_plan_2026-05-11.md`（grill-me 13 轮闭环）
+
 ## Core Value
 
 把临床医生从"手工翻 5+ 本指南找对应推荐"中解放出来——一次输入患者临床信息，自动拉取多机构指南的相关章节并生成结构化的循证对比与共识/差异分析。
