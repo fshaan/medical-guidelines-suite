@@ -191,4 +191,19 @@ Apple Silicon, a Metal shader compile warning appears but does not affect result
 
 ---
 
-*Last Updated: 2026-04-23*
+## v3.1 async-pipeline Planning (Active)
+
+GSD 规划文档落在 [`.planning/`](.planning/)：
+- `.planning/PROJECT.md` — milestone 范围 + 13 项 key decisions
+- `.planning/ROADMAP.md` — 4 phases × success criteria
+- `.planning/REQUIREMENTS.md` — 37 个 v1 req 全部 mapping
+- `.planning/STATE.md` — 当前位置 + 性能基线表
+- `.planning/phases/01-async-retriever-kb-metadata-sidecar/` — Phase 1 CONTEXT + PATTERNS + 3 PLAN
+
+**当前位置**：Phase 1 plans 已就绪并通过 plan-checker，等待 `/gsd-execute-phase 1` 启动 Wave 1（async retriever + kb_metadata 并行）。
+
+**重要：D-01 释义改动** —— CONTEXT.md D-01 字面是「同步类降级为 thin shim」，但实际落地（`01-01-PLAN.md` 的 `<critical_conflict_resolution>`）是「async/sync 物理共存」—— 因为 sync 测试 patch `requests.post`，shim 会让 patch 失效。详见 [`Decisions.md`](Decisions.md) 2026-05 末条。
+
+---
+
+*Last Updated: 2026-05-11*
