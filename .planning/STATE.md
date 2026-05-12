@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v3.1
 milestone_name: milestone
 status: in-progress
-last_updated: "2026-05-12T10:22:00.000Z"
+last_updated: "2026-05-12T10:38:49.000Z"
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 8
-  completed_plans: 7
-  percent: 88
+  completed_plans: 8
+  percent: 100
 ---
 
 # STATE: medical-guidelines-suite
@@ -23,8 +23,8 @@ progress:
 ## Current Position
 
 - **Phase**: 3 — Pipeline + run Subcommand + Interface Extension
-- **Status**: Phase 3 executing (Plan 01+02 complete, Plan 03 next)
-- **Progress**: `[████████░░] 2/4 phases · 7/8 plans · 29/37 requirements delivered`
+- **Status**: Phase 3 全部 Plan 完成（Plan 01+02+03），等待真实环境 E2E 验收
+- **Progress**: `[██████████] 2/4 phases · 8/8 plans · 35/37 requirements delivered`
 
 ## Performance Metrics
 
@@ -68,23 +68,24 @@ progress:
 - [x] Plan 02-02: LLMProfile.from_env + env/yaml 三级优先级 + config/llm_profiles.yaml + 11 unit tests — ✅
 - [x] Plan 03-01: pipeline.py 核心 (run_pipeline + _run_one_patient + helpers) — ✅ 275 tests
 - [x] Plan 03-02: batch_pipeline.py CLI 改造 (run 子命令 + hidden + --patients-dir) — ✅ 286 tests
-- [ ] Plan 03-03: E2E smoke + 真实环境验收清单
+- [x] Plan 03-03: E2E smoke + 真实环境验收清单 — ✅ 289 tests
 
 ### Blockers
 
 无。
 
-### Phase 3 Plan 02 交付物
+### Phase 3 Plan 03 交付物
 
-- `scripts/batch_pipeline.py` — run 子命令 + 4 hidden + 2 互斥组 + dispatch 分支 + cmd_validate/generate 分支 + 2 新私有函数
-- `tests/test_cli_subcommands.py`（11 cases）
-- 286 tests passing, 0 failures
-- Requirements delivered: CLI-01..05 + CFG-03 (6/18 Phase 3 reqs)
+- `tests/test_pipeline_e2e_smoke.py`（3 cases）— CI 可运行 E2E smoke（rag_results schema + main dispatch + 异常退出码）
+- `docs/phase3_e2e_acceptance.md`（140 LOC）— 真实 vLLM + QMD 10 例验收命令清单 + Sign-off 表
+- 289 tests passing, 0 failures
+- Requirements delivered: QG-01..QG-06 (6/18 Phase 3 reqs)
+- 待用户执行真实环境验收后 Phase 3 ship gate 达成
 
 ## Session Continuity
 
-- **本次会话**：2026-05-12 Phase 3 执行中
-- **当前状态**：Phase 3 Plan 01+02 完成（286 tests），Plan 03 待执行（E2E 验收需真实环境）
+- **本次会话**：2026-05-12 Phase 3 Plan 03 执行完成
+- **当前状态**：Phase 3 全部 3 个 Plan 完成（289 tests），等待用户真实环境 E2E 验收
 
 ---
-*Phase 3 Plan 02 completed: 2026-05-12*
+*Phase 3 Plan 03 completed: 2026-05-12*
