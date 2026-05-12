@@ -154,6 +154,12 @@ def infer_chunk_tags(file_name: str, synonym_map: dict) -> list[str]:
     """从文件名（含或不含 .md / org 前缀）推断 canonical_keys 集合。
 
     对齐 batch_pipeline.py:1326-1328 的归一化：lower + token split。
+
+    WR-04 known limit: 歧义器官 alias（pancreas/liver/stomach/pulmonary/cervix
+    + 中文 肝/胃/肺）在与非疾病 token 混合的 stem 上会误命中（例如
+    `pancreas-research.md` → 归 pancreatic）。Conventions.md 约定 KB 文件
+    命名应避免疾病 alias 与非疾病 token 混排；Phase 2 计划引入 stop-token
+    过滤做代码层防御。
     """
     if not file_name:
         return []

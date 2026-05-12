@@ -71,6 +71,21 @@ def test_infer_chunk_tags_empty_when_no_match():
     assert tags == []
 
 
+def test_infer_chunk_tags_known_false_positive_on_organ_token():
+    """WR-04 boundary doc: 歧义器官 alias 与非疾病 token 混排会误命中。
+
+    这是 Phase 1 已知限制（见 infer_chunk_tags docstring + Conventions.md）。
+    Phase 2 计划用 stop-token list 修复。此测试 documenting 当前行为，
+    一旦未来代码引入 stop-token 过滤，应将断言反转。
+    """
+    # `pancreas` 是 pancreatic 的器官 alias，与 `research` 这种非疾病 token
+    # 混排时会被切分后命中——KB 命名约定要求避免此类 stem，否则触发误归类。
+    tags = infer_chunk_tags("pancreas-research-2026", _SYNONYM_SEED)
+    assert "pancreatic" in tags, (
+        "WR-04 known limit changed: review Conventions.md and Phase 2 stop-token plan"
+    )
+
+
 # ── filter_orgs_by_disease ────────────────────────────────────────────
 
 def test_filter_orgs_drop_unmatched():

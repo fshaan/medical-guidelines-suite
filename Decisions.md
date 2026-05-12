@@ -45,6 +45,11 @@ v2.2 引入确定性批处理模式（orchestrate），先对患者列表做 QMD
 新版命令：`parse / run / validate / generate / index`（5 个），旧的 `split / orchestrate / verify-batch / merge` 在 Phase 3 期间 hidden（`--help` 不显示但仍可调用），Phase 3 ship 后 stabilize 一周再于 Phase 4 一次性删除。  
 **Why**：当前 7 阶段是 v2.x "确定性 orchestrate" 设计——但那是建立在"LLM 必须人工执行"前提下的。引入 async LLM 客户端后，orchestrate 的 batch prompt 中间产物 + verify-batch 的执行证据校验全部不再需要。保留双写会导致 drift；一次性删除前先 stabilize 一周保留回退能力。
 
+## 2026-05 | WR-04 短词误命中：先治理命名约定，Phase 2 再做代码级 stop-token
+
+Phase 1 review 发现 `infer_chunk_tags("pancreas-research", ...)` 会把研究文档错误归入 pancreatic 病种 tags——根因是 `_SYNONYM_SEED` 含歧义器官 alias（`pancreas`、`liver`、`stomach`、`肝`、`胃`、`肺`），与非疾病 token 在 stem 中混排时 token split 命中。**Phase 1 收尾不动 seed**：通过 Conventions.md 增补 KB 命名约定（建议 `<ORG>_<Disease>_<Year>.md` 形式、研究文档独立子目录或 `_meta_`/`_protocol_` 前缀）+ `infer_chunk_tags` docstring 警示 + 一个 documenting 边界测试（`pancreas-research` 仍归 pancreatic）。  
+**Why**：直接移除歧义器官 alias 会破坏正向命中（`liver-cancer-2026.md` 也命中 `liver`）；引入 stop-token 列表要枚举 `research/study/protocol/version/...` 数十词，外溢到 seed 数据治理范围。Phase 2 计划引入 alias 长度分层（短 alias 仅精确匹配，长 alias 参与 token split）+ stop-token 黑名单做代码级防御；当前 Phase 1 用 documenting 测试锁死边界，未来代码引入过滤时该测试反转即可发现 regression。
+
 ## 2026-05 | D-01 释义改动：async/sync 物理共存（非 thin shim）
 
 Phase 1 把 `AsyncQMDService` 作为新真相，但同步 `QMDService` **保留独立 `requests`-based 实现路径**，不走 `asyncio.run(self._async.method())` 包装。D-01 字面"单一异步真相"重新解释为"调用方一律用 async；sync 类仅为 BC stub"。  
