@@ -1,0 +1,16 @@
+{
+  "guideline_results": [
+    {
+      "guideline": "CSCO",
+      "guideline_version": "2024",
+      "recommendation": "对于 cT3N1M0 胃腺癌，推荐根治性手术 D2 淋巴结清扫，术后辅助化疗 SOX 方案 6 个月。",
+      "evidence_level": "1A类",
+      "source_file": "csco-gastric-2024.md",
+      "retrieval_sources": [
+        {"source_file": "csco-gastric-2024.md", "score": 0.92}
+      ]
+    }
+  ],
+  "consensus": ["术后辅助化疗"],
+  "differences": []
+}

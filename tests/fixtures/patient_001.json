@@ -1,0 +1,15 @@
+{
+  "patient_id": "test_001",
+  "name": "测试患者",
+  "gender": "男",
+  "age": 65,
+  "disease_type": "胃癌",
+  "primary_site": "胃窦",
+  "pathology": "腺癌中分化",
+  "staging_prefix": "c",
+  "t_stage": "T3",
+  "n_stage": "N1",
+  "m_stage": "M0",
+  "tnm_stage": "III A",
+  "diagnosis_summary": "男性，65岁，胃窦腺癌中分化，cT3N1M0 III A"
+}
