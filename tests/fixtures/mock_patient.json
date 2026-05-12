@@ -1,0 +1,11 @@
+{
+  "patient_id": "p001",
+  "patient_name": "贾常山",
+  "primary_site": "结肠",
+  "disease_type": "结直肠癌",
+  "stage": "IV期",
+  "metastasis": "肝转移",
+  "molecular": "KRAS 野生型, MSI-H",
+  "treatment_history": "FOLFOX 6 周期",
+  "diagnosis_summary": "晚期结直肠癌伴肝转移"
+}
