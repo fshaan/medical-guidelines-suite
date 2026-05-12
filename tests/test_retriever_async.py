@@ -252,3 +252,57 @@ async def test_async_qmd_200_no_session_header_does_not_retry(
     assert mock_client.post.await_count == 2, (
         f"Expected 2 HTTP calls (no reinit), got {mock_client.post.await_count}"
     )
+
+
+@pytest.mark.asyncio
+@patch("scripts.retriever.subprocess.Popen")
+@patch("scripts.retriever.httpx.AsyncClient")
+async def test_async_qmd_aclose_error_still_kills_process(
+    mock_client_cls, mock_popen
+):
+    """BL-02 回归：__aexit__ 内 aclose() 抛异常时，process.terminate 仍必须执行；
+    aclose 异常在 caller 无原始异常时透传出去。
+    """
+    proc = MagicMock()
+    proc.poll.return_value = None
+    mock_popen.return_value = proc
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=_mk_http_response())
+    mock_client.aclose = AsyncMock(side_effect=RuntimeError("loop closed"))
+    mock_client_cls.return_value = mock_client
+
+    from scripts.retriever import AsyncQMDService
+
+    svc = AsyncQMDService(port=9999)
+    await svc.__aenter__()
+    with pytest.raises(RuntimeError, match="loop closed"):
+        await svc.__aexit__(None, None, None)
+
+    # aclose 抛了，process.terminate 仍执行，subprocess 没泄漏
+    proc.terminate.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("scripts.retriever.subprocess.Popen")
+@patch("scripts.retriever.httpx.AsyncClient")
+async def test_async_qmd_aclose_error_does_not_overwrite_caller_exception(
+    mock_client_cls, mock_popen
+):
+    """BL-02 回归：caller 有原始异常时，aclose 错误必须被吞掉避免覆盖。"""
+    proc = MagicMock()
+    proc.poll.return_value = None
+    mock_popen.return_value = proc
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=_mk_http_response())
+    mock_client.aclose = AsyncMock(side_effect=RuntimeError("aclose failed"))
+    mock_client_cls.return_value = mock_client
+
+    from scripts.retriever import AsyncQMDService
+
+    with pytest.raises(ValueError, match="business error"):
+        async with AsyncQMDService(port=9999):
+            raise ValueError("business error")
+
+    proc.terminate.assert_called_once()

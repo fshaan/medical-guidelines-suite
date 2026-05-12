@@ -279,24 +279,34 @@ class AsyncQMDService:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        # BL-02 修复：aclose() 和 process 清理彼此独立兜底——
+        # aclose 抛异常不能吞掉 subprocess 清理，否则测试套件反复运行会
+        # 积累僵尸 QMD 进程；caller 已有原始异常时不要再覆盖。
         self._session_id = None
+        aclose_err: Exception | None = None
         try:
             if self._owns_http and self._http is not None:
                 await self._http.aclose()
+        except Exception as e:  # noqa: BLE001 — 故意宽 catch，独立兜底
+            aclose_err = e
         finally:
             self._http = None
-            if self.process is None:
-                return
-            if self.process.poll() is not None:
-                self.process = None
-                return
-            self.process.terminate()
+
+        if self.process is not None and self.process.poll() is None:
             try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait(timeout=3)
-            self.process = None
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=3)
+            except OSError:
+                pass  # 进程已不在/权限错误：放弃，不让清理失败覆盖业务异常
+        self.process = None
+
+        # 仅在 caller 没有原始异常时把 aclose 错误抛出去；否则吞掉避免覆盖
+        if aclose_err is not None and exc_type is None:
+            raise aclose_err
 
     async def _wait_for_ready_async(self, timeout: int = 30) -> None:
         """Poll QMD HTTP server async; store mcp-session-id from first 200."""
