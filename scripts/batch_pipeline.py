@@ -887,6 +887,24 @@ def generate_batch_prompt(
     return "\n".join(lines)
 
 
+def _extract_org_from_hit_path(path: str) -> str:
+    """从 QMD hit.path 解析 org 名。
+
+    `qmd://NCCN/file.md` → "NCCN"
+    `NCCN/file.md`       → "NCCN"  (向后兼容裸路径)
+
+    QMD context URL（batch_pipeline.py:1312）用原大小写注册，QMD search 返回
+    的 file 字段保留该形态；chunks.json sidecar key 用 lowercase。调用方需做
+    case-insensitive 对比。
+    """
+    if not path:
+        return ""
+    if path.startswith("qmd://"):
+        remainder = path[len("qmd://"):]
+        return remainder.split("/", 1)[0] if "/" in remainder else remainder
+    return path.split("/", 1)[0] if "/" in path else ""
+
+
 def cmd_orchestrate(args):
     """orchestrate subcommand -- batch processing with QMD pre-retrieval."""
     from scripts.retriever import QMDService
@@ -926,7 +944,8 @@ def cmd_orchestrate(args):
             relevant_orgs = filter_orgs_by_disease(
                 kb_profile, p.get("disease_type", "")
             )
-            relevant_org_set = set(relevant_orgs)
+            # case-insensitive 集合：QMD hit.path 中 org 大小写可能与 KB 目录名不同
+            relevant_org_lower = {o.lower() for o in relevant_orgs}
 
             retrieval_results = []
             for q in queries:
@@ -943,10 +962,12 @@ def cmd_orchestrate(args):
                     continue
                 seen.add(key)
 
-                # Phase 3.1/3.2: 组织过滤 — 跳过不适用 org 的结果
-                path = hit.get("path", "")
-                org = path.split("/", 1)[0] if "/" in path else ""
-                if relevant_org_set and org and org not in relevant_org_set:
+                # Phase 3.1/3.2: 组织过滤 — 跳过不适用 org 的结果。
+                # hit.path 形如 "qmd://NCCN/file.md"，先解析出 org 再做
+                # case-insensitive 比较（codex P1 修复：原 split("/", 1)[0]
+                # 在 qmd:// 路径上返回 "qmd:"，把全部 hits 错过滤为 off-topic）
+                org = _extract_org_from_hit_path(hit.get("path", ""))
+                if relevant_org_lower and org and org.lower() not in relevant_org_lower:
                     total_filtered_orgs += 1
                     continue
 
