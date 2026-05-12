@@ -310,6 +310,22 @@ async def test_api_key_resolved_lazily(profile, mock_http, monkeypatch):
 
 
 @pytest.mark.asyncio
+@patch("scripts.llm_client.asyncio.sleep", new_callable=AsyncMock)
+async def test_connect_error_retried_and_wrapped(mock_sleep, profile, mock_http):
+    mock_http.post.side_effect = [httpx.ConnectError("conn reset")] * 4
+    client = AsyncLLMClient(profile, http=mock_http)
+    with pytest.raises(LLMFailure) as exc_info:
+        await client.complete_structured(
+            [{"role": "user", "content": "q"}], PATIENT_RECOMMENDATION_SCHEMA,
+            patient_id="p004",
+        )
+    assert exc_info.value.stage == "transport"
+    assert exc_info.value.patient_id == "p004"
+    assert isinstance(exc_info.value.last_error, httpx.ConnectError)
+    assert mock_http.post.await_count == 4
+
+
+@pytest.mark.asyncio
 async def test_timeout_applied_from_profile(profile, mock_http):
     mock_http.post.return_value = _mk_resp()
     client = AsyncLLMClient(profile, http=mock_http)

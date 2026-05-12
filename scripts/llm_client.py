@@ -284,9 +284,8 @@ class AsyncLLMClient:
                         ),
                         stage="transport",
                     )
-                resp.raise_for_status()
                 return self._parse_and_validate(resp.json(), schema, patient_id)
-            except httpx.TimeoutException as e:
+            except httpx.RequestError as e:
                 last_error = e
                 if attempt < 3:
                     await asyncio.sleep(1.0 * (2 ** attempt))
