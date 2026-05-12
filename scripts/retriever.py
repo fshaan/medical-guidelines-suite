@@ -16,6 +16,7 @@ import os
 import socket
 import subprocess
 import time
+from typing import Optional
 
 import httpx
 import requests
@@ -50,11 +51,11 @@ class QMDService:
             results = qmd.query("gastric cancer treatment")
     """
 
-    def __init__(self, port: int | None = None):
+    def __init__(self, port: Optional[int] = None):
         self.port = port or int(os.environ.get("QMD_PORT", "8181"))
-        self.process: subprocess.Popen | None = None
+        self.process: Optional[subprocess.Popen] = None
         self.base_url = f"http://localhost:{self.port}/mcp"
-        self._session_id: str | None = None
+        self._session_id: Optional[str] = None
 
     @property
     def _session_headers(self) -> dict:
@@ -227,11 +228,11 @@ class AsyncQMDService:
 
     def __init__(
         self,
-        port: int | None = None,
+        port: Optional[int] = None,
         *,
         timeout_s: float = 60.0,
-        semaphore: asyncio.Semaphore | None = None,
-        http_client: httpx.AsyncClient | None = None,
+        semaphore: Optional[asyncio.Semaphore] = None,
+        http_client: Optional[httpx.AsyncClient] = None,
     ):
         self.port = port or int(os.environ.get("QMD_PORT", "8181"))
         self.base_url = f"http://localhost:{self.port}/mcp"
@@ -239,8 +240,8 @@ class AsyncQMDService:
         self._sem = semaphore or asyncio.Semaphore(8)   # D-03 默认 8
         self._http = http_client
         self._owns_http = http_client is None
-        self.process: subprocess.Popen | None = None
-        self._session_id: str | None = None
+        self.process: Optional[subprocess.Popen] = None
+        self._session_id: Optional[str] = None
 
     @property
     def _session_headers(self) -> dict:
@@ -283,7 +284,7 @@ class AsyncQMDService:
         # aclose 抛异常不能吞掉 subprocess 清理，否则测试套件反复运行会
         # 积累僵尸 QMD 进程；caller 已有原始异常时不要再覆盖。
         self._session_id = None
-        aclose_err: Exception | None = None
+        aclose_err: Optional[Exception] = None
         try:
             if self._owns_http and self._http is not None:
                 await self._http.aclose()
@@ -374,7 +375,10 @@ class AsyncQMDService:
     ) -> list[dict]:
         """Async hybrid query (BM25 + vector + LLM reranking).
 
-        Semaphore-gated: at most `self._sem._value` in-flight requests.
+        Semaphore-gated: in-flight requests bounded by the injected semaphore
+        (default capacity 8, see __init__ signature). Do not rely on
+        asyncio.Semaphore._value externally — it is a CPython implementation
+        detail.
         """
         async with self._sem:
             return await self._post_tools_call({
