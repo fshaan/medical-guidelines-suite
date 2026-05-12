@@ -11,9 +11,9 @@
 
 ## Phases
 
-- [ ] **Phase 1: Async Retriever + KB Metadata Sidecar** — 异步化 QMD 检索层并产出病种侧车元数据
-- [ ] **Phase 2: LLM Client + Schema + Unit Tests** — 接入内网 vLLM，定义 strict JSON Schema，单元测试覆盖
-- [ ] **Phase 3: Pipeline + run Subcommand + Interface Extension** — 端到端 async 流水线落地（关键 gate）
+- [ ] **Phase 1: Async Retriever + KB Metadata Sidecar** — 异步化 QMD 检索层并产出病种侧车元数据 ✅
+- [ ] **Phase 2: LLM Client + Schema + Unit Tests** — 接入内网 vLLM，定义 strict JSON Schema，单元测试覆盖 ✅
+- [x] **Phase 3: Pipeline + run Subcommand + Interface Extension** — 端到端 async 流水线落地（关键 gate）
 - [ ] **Phase 4: Delete Batch Concept + Rewrite Tests** — 清理旧 7 阶段产物，CLI 折叠为 5 子命令
 
 ## Summary
@@ -84,9 +84,9 @@
 **Duration estimate:** 3 days
 
 **Plans:** 3 plans
-- [ ] 03-01-PLAN.md — scripts/pipeline.py 核心(run_pipeline + _run_one_patient + 11 helpers,PIP-01..06)
-- [ ] 03-02-PLAN.md — scripts/batch_pipeline.py CLI 改造(run 子命令 + 4 hidden + validate/generate --patients-dir,CLI-01..05 + CFG-03)
-- [ ] 03-03-PLAN.md — 端到端 smoke E2E + 真实环境验收清单 + Sign-off checkpoint(QG-01..06)
+- [x] 03-01-PLAN.md — scripts/pipeline.py 核心(run_pipeline + _run_one_patient + 11 helpers,PIP-01..06) ✅
+- [x] 03-02-PLAN.md — scripts/batch_pipeline.py CLI 改造(run 子命令 + 4 hidden + validate/generate --patients-dir,CLI-01..05 + CFG-03) ✅
+- [x] 03-03-PLAN.md — 端到端 smoke E2E + 真实环境验收清单 + Sign-off checkpoint(QG-01..06) ✅ (checkpoint:human-verify 待签收)
 
 ### Phase 4: Delete Batch Concept + Rewrite Tests
 
@@ -118,8 +118,8 @@ Sequential execution. Phase 3 是关键性能 gate；Phase 4 显式延迟一周�
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Async Retriever + KB Metadata Sidecar | 3/3 | ✅ Complete | 2026-05-12 |
-| 2. LLM Client + Schema + Unit Tests | 0/2 | Plans Created | - |
-| 3. Pipeline + run + Interface Extension | 0/3 | Plans Created | - |
+| 2. LLM Client + Schema + Unit Tests | 2/2 | ✅ Complete | 2026-05-12 |
+| 3. Pipeline + run + Interface Extension | 3/3 | ✅ Complete (checkpoint:human-verify pending) | 2026-05-12 |
 | 4. Delete Batch Concept + Rewrite Tests | 0/? | Not started | - |
 
 ## Coverage
