@@ -339,12 +339,11 @@ class AsyncQMDService:
             json=payload,
             timeout=self._timeout,
         )
-        # D-04：400 OR 响应缺 session header → 重新 initialize + 重发一次
-        session_invalid = (
-            resp.status_code == 400
-            or resp.headers.get("mcp-session-id") is None
-        )
-        if session_invalid:
+        # D-04: 仅 HTTP 400 视为 session invalid 触发 reinit。
+        # 不要把"响应缺 mcp-session-id header"当信号——MCP Streamable HTTP
+        # 协议仅 initialize 响应回带该 header，tools/call 正常响应通常不带，
+        # 误判会让每次 query 多发 2 次 HTTP（reinit + retry）。
+        if resp.status_code == 400:
             await self._reinitialize_session()
             resp = await self._http.post(
                 self.base_url,

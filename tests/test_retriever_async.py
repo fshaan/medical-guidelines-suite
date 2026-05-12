@@ -215,3 +215,40 @@ async def test_async_qmd_exit_handles_crashed_process(mock_client_cls, mock_pope
         pass
 
     proc.terminate.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("scripts.retriever.subprocess.Popen")
+@patch("scripts.retriever.httpx.AsyncClient")
+async def test_async_qmd_200_no_session_header_does_not_retry(
+    mock_client_cls, mock_popen
+):
+    """BL-01 回归：tools/call 返回 200 但响应缺 mcp-session-id header 时，
+    必须不触发 reinit（MCP Streamable HTTP 协议仅 initialize 响应回带该 header）。
+    """
+    proc = MagicMock()
+    proc.poll.return_value = None
+    mock_popen.return_value = proc
+
+    posts = [
+        _mk_http_response(session_id="s1"),  # initialize
+        _mk_http_response(  # tools/call 200 OK，但响应不带 session header
+            status=200, session_id=None, body=_empty_qmd_result()
+        ),
+    ]
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=posts)
+    mock_client.aclose = AsyncMock()
+    mock_client_cls.return_value = mock_client
+
+    from scripts.retriever import AsyncQMDService
+
+    async with AsyncQMDService(port=9999) as svc:
+        results = await svc.query("test")
+
+    assert results == []
+    # 期望仅 2 次 HTTP：1 initialize + 1 tools/call，没有 reinit + retry
+    assert mock_client.post.await_count == 2, (
+        f"Expected 2 HTTP calls (no reinit), got {mock_client.post.await_count}"
+    )
