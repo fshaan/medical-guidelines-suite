@@ -83,7 +83,10 @@
 
 **Duration estimate:** 3 days
 
-**Plans:** TBD
+**Plans:** 3 plans
+- [ ] 03-01-PLAN.md — scripts/pipeline.py 核心(run_pipeline + _run_one_patient + 11 helpers,PIP-01..06)
+- [ ] 03-02-PLAN.md — scripts/batch_pipeline.py CLI 改造(run 子命令 + 4 hidden + validate/generate --patients-dir,CLI-01..05 + CFG-03)
+- [ ] 03-03-PLAN.md — 端到端 smoke E2E + 真实环境验收清单 + Sign-off checkpoint(QG-01..06)
 
 ### Phase 4: Delete Batch Concept + Rewrite Tests
 
@@ -116,7 +119,7 @@ Sequential execution. Phase 3 是关键性能 gate；Phase 4 显式延迟一周�
 |-------|----------------|--------|-----------|
 | 1. Async Retriever + KB Metadata Sidecar | 3/3 | ✅ Complete | 2026-05-12 |
 | 2. LLM Client + Schema + Unit Tests | 0/2 | Plans Created | - |
-| 3. Pipeline + run + Interface Extension | 0/? | Not started | - |
+| 3. Pipeline + run + Interface Extension | 0/3 | Plans Created | - |
 | 4. Delete Batch Concept + Rewrite Tests | 0/? | Not started | - |
 
 ## Coverage
