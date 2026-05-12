@@ -16,6 +16,8 @@ from typing import Callable
 
 import httpx
 import jsonschema
+import yaml
+from pathlib import Path
 
 
 class LLMFailure(Exception):
@@ -111,6 +113,92 @@ class LLMProfile:
     timeout_s: int = 180
     structured_mode: str = "json_schema"
     concurrency: int = 5
+
+    @classmethod
+    def from_env(
+        cls,
+        name: str | None = None,
+        *,
+        yaml_path: "str | os.PathLike | None" = None,
+    ) -> "LLMProfile":
+        env = os.environ
+        resolved_name = name if name is not None else env.get(_ENV_PROFILE, _DEFAULT_PROFILE_NAME)
+        yaml_profiles = _load_profiles_yaml(yaml_path)
+        yaml_dict = yaml_profiles.get(resolved_name, {}) if isinstance(yaml_profiles, dict) else {}
+
+        def _pick_str(env_key, yaml_key, default=None):
+            v = env.get(env_key)
+            if v is not None:
+                return v
+            if yaml_key in yaml_dict and yaml_dict[yaml_key] is not None:
+                return yaml_dict[yaml_key]
+            return default
+
+        def _pick_int(env_key, yaml_key, default):
+            v = env.get(env_key)
+            if v is not None:
+                return int(v)
+            if yaml_key in yaml_dict and yaml_dict[yaml_key] is not None:
+                return int(yaml_dict[yaml_key])
+            return default
+
+        base_url = _pick_str(_ENV_BASE_URL, "base_url")
+        model = _pick_str(_ENV_MODEL, "model")
+        api_key_env = _pick_str(_ENV_API_KEY_ENV, "api_key_env", default="LLM_API_KEY")
+        structured_mode = _pick_str(_ENV_STRUCTURED_MODE, "structured_mode", default="json_schema")
+        timeout_s = _pick_int(_ENV_TIMEOUT, "timeout_s", default=180)
+        concurrency = _pick_int(_ENV_CONCURRENCY, "concurrency", default=5)
+
+        if base_url is None:
+            raise ValueError(
+                f"base_url is required: set {_ENV_BASE_URL} env or define "
+                f"profiles.{resolved_name}.base_url in {yaml_path or _DEFAULT_YAML_PATH}"
+            )
+        if model is None:
+            raise ValueError(
+                f"model is required: set {_ENV_MODEL} env or define "
+                f"profiles.{resolved_name}.model in {yaml_path or _DEFAULT_YAML_PATH}"
+            )
+
+        return cls(
+            name=resolved_name,
+            base_url=base_url,
+            model=model,
+            api_key_env=api_key_env,
+            timeout_s=timeout_s,
+            structured_mode=structured_mode,
+            concurrency=concurrency,
+        )
+
+
+_DEFAULT_YAML_PATH = Path("config/llm_profiles.yaml")
+
+_ENV_PROFILE = "LLM_PROFILE"
+_ENV_BASE_URL = "LLM_BASE_URL"
+_ENV_MODEL = "LLM_MODEL"
+_ENV_API_KEY_ENV = "LLM_API_KEY_ENV"
+_ENV_TIMEOUT = "LLM_TIMEOUT"
+_ENV_STRUCTURED_MODE = "LLM_STRUCTURED_MODE"
+_ENV_CONCURRENCY = "LLM_CONCURRENCY"
+
+_DEFAULT_PROFILE_NAME = "qwen3-vllm-lan"
+
+
+def _load_profiles_yaml(
+    path: "str | os.PathLike | None" = None,
+) -> dict:
+    p = Path(path) if path is not None else _DEFAULT_YAML_PATH
+    if not p.exists():
+        return {}
+    try:
+        with p.open(encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    profiles = data.get("profiles", {})
+    return profiles if isinstance(profiles, dict) else {}
 
 
 class AsyncLLMClient:
