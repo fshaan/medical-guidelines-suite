@@ -63,8 +63,8 @@
 **Duration estimate:** 2 days
 
 **Plans:** 2 plans
-- [ ] 02-01-PLAN.md — AsyncLLMClient + PATIENT_RECOMMENDATION_SCHEMA + 三类重试 + unit tests（LLM-01/02/04/05）
-- [ ] 02-02-PLAN.md — LLMProfile.from_env + env/yaml 三级优先级 + config/llm_profiles.yaml 入仓 + unit tests（LLM-03, CFG-01/02）
+- [x] 02-01-PLAN.md — AsyncLLMClient + PATIENT_RECOMMENDATION_SCHEMA + 三类重试 + unit tests（LLM-01/02/04/05）
+- [x] 02-02-PLAN.md — LLMProfile.from_env + env/yaml 三级优先级 + config/llm_profiles.yaml 入仓 + unit tests（LLM-03, CFG-01/02）
 
 ### Phase 3: Pipeline + run Subcommand + Interface Extension
 
