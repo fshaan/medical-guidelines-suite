@@ -62,7 +62,9 @@
 
 **Duration estimate:** 2 days
 
-**Plans:** TBD
+**Plans:** 2 plans
+- [ ] 02-01-PLAN.md — AsyncLLMClient + PATIENT_RECOMMENDATION_SCHEMA + 三类重试 + unit tests（LLM-01/02/04/05）
+- [ ] 02-02-PLAN.md — LLMProfile.from_env + env/yaml 三级优先级 + config/llm_profiles.yaml 入仓 + unit tests（LLM-03, CFG-01/02）
 
 ### Phase 3: Pipeline + run Subcommand + Interface Extension
 
@@ -113,7 +115,7 @@ Sequential execution. Phase 3 是关键性能 gate；Phase 4 显式延迟一周�
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Async Retriever + KB Metadata Sidecar | 3/3 | ✅ Complete | 2026-05-12 |
-| 2. LLM Client + Schema + Unit Tests | 0/? | Not started | - |
+| 2. LLM Client + Schema + Unit Tests | 0/2 | Plans Created | - |
 | 3. Pipeline + run + Interface Extension | 0/? | Not started | - |
 | 4. Delete Batch Concept + Rewrite Tests | 0/? | Not started | - |
 

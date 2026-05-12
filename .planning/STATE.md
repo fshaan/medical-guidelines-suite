@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v3.1
 milestone_name: milestone
-status: phase-complete
-last_updated: "2026-05-12T00:15:00Z"
+status: phase-planning
+last_updated: "2026-05-12T03:00:00Z"
 progress:
   total_phases: 4
   completed_phases: 1
-  total_plans: 3
+  total_plans: 5
   completed_plans: 3
-  percent: 100
+  percent: 60
 ---
 
 # STATE: medical-guidelines-suite
@@ -22,9 +22,9 @@ progress:
 
 ## Current Position
 
-- **Phase**: 1 — Async Retriever + KB Metadata Sidecar ✅
-- **Status**: Phase 1 complete (all 3 plans executed)
-- **Progress**: `[██░░░░░░░░] 1/4 phases · 3/3 plans in Phase 1 · 10/37 requirements delivered`
+- **Phase**: 2 — LLM Client + Schema + Unit Tests（plans created，等待执行）
+- **Status**: Phase 1 ✅ complete · Phase 2 plans ready（02-01 + 02-02），通过 plan-checker（2 WARNING 已接受）
+- **Progress**: `[███░░░░░░░] 1/4 phases · Phase 2 plans 2/2 created · 10/37 requirements delivered · Phase 2 将交付 7 reqs（LLM-01..05 + CFG-01/02）`
 
 ## Performance Metrics
 
@@ -56,15 +56,26 @@ progress:
 - [x] Plan 01-01: AsyncQMDService + requirements.txt — ✅
 - [x] Plan 01-02: kb_metadata.py + 22 tests — ✅
 - [x] Plan 01-03: cmd_index 接入 build_sidecar — ✅
+- [ ] Plan 02-01: AsyncLLMClient + PATIENT_RECOMMENDATION_SCHEMA + 三类重试 + unit tests（Wave 1，LLM-01/02/04/05）
+- [ ] Plan 02-02: LLMProfile.from_env + env/yaml 三级优先级 + config/llm_profiles.yaml + unit tests（Wave 2，LLM-03/CFG-01/02）
 
 ### Blockers
 
-无。
+无。Phase 2 ready for `/gsd-execute-phase 2`。
+
+### Phase 2 关键决策锁定（planner 在 PLAN.md 中定稿）
+
+- `jsonschema>=4.0,<5.0` 引入（DeepSeek json_object profile 客户端兜底）
+- `complete_structured` 与 `complete_structured_with_feedback` 两方法分离
+- 退避基数 `base=1.0s` × `2 ** attempt`（3 次重试总等待 7s ≤ 180s timeout）
+- `_EVIDENCE_LEVEL_ENUM` 锁定 23 项（ESMO 扩展自 4 → 9，向后兼容 legacy 22 项子集）
+- HTTP client 强制注入（与 AsyncQMDService 默认自建差异化）
+- 02-02 wave=2 depends_on=["02-01"]（共享 scripts/llm_client.py 文件锁）
 
 ## Session Continuity
 
-- **本次会话**：2026-05-12 Phase 1 全部 3 plans 执行完成（198 tests, 零回归）
-- **下次会话入口**：Phase 2 规划 `/gsd-plan-phase 2` 或人工端到端验证 `batch_pipeline.py index --kb-root $MEDICAL_GUIDELINES_DIR`
+- **本次会话**：2026-05-12 Phase 2 plan-phase 完成（02-CONTEXT.md + 02-PATTERNS.md + 02-01-PLAN.md + 02-02-PLAN.md + ROADMAP 进度更新）
+- **下次会话入口**：`/gsd-execute-phase 2` 启动 Wave 1（02-01 AsyncLLMClient 落地）
 
 ---
-*Phase 1 completed: 2026-05-12*
+*Phase 1 completed: 2026-05-12 · Phase 2 plans ready: 2026-05-12*
