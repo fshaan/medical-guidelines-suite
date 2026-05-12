@@ -128,6 +128,16 @@ def test_llm_concurrency_invalid_raises(monkeypatch, yaml_with_two_profiles):
         LLMProfile.from_env(yaml_path=yaml_with_two_profiles)
 
 
+def test_llm_concurrency_zero_rejected_by_post_init():
+    with pytest.raises(ValueError, match="concurrency must be >= 1"):
+        LLMProfile(name="t", base_url="http://x/v1", model="m", concurrency=0)
+
+
+def test_llm_timeout_zero_rejected_by_post_init():
+    with pytest.raises(ValueError, match="timeout_s must be >= 1"):
+        LLMProfile(name="t", base_url="http://x/v1", model="m", timeout_s=0)
+
+
 def test_llm_profile_required_field_missing(monkeypatch, tmp_path):
     monkeypatch.setenv("LLM_PROFILE", "nonexistent")
     empty = tmp_path / "empty.yaml"

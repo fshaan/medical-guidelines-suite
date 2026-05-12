@@ -117,6 +117,14 @@ class LLMProfile:
     structured_mode: str = "json_schema"
     concurrency: int = 5
 
+    def __post_init__(self):
+        if self.concurrency < 1:
+            raise ValueError(
+                f"concurrency must be >= 1 (Semaphore(0) deadlocks indefinitely), got {self.concurrency}"
+            )
+        if self.timeout_s < 1:
+            raise ValueError(f"timeout_s must be >= 1, got {self.timeout_s}")
+
     @classmethod
     def from_env(
         cls,
@@ -336,7 +344,10 @@ class AsyncLLMClient:
             return result, score, "ok"
         tmpl = feedback_template if feedback_template is not None else _DEFAULT_FEEDBACK_TEMPLATE
         feedback_msg = tmpl.format(prev=score, threshold=threshold)
-        augmented = list(messages) + [{"role": "user", "content": feedback_msg}]
+        augmented = list(messages) + [
+            {"role": "assistant", "content": json.dumps(result, ensure_ascii=False)},
+            {"role": "user", "content": feedback_msg},
+        ]
         result2 = await self.complete_structured(
             augmented, schema, schema_name=schema_name, patient_id=patient_id,
         )

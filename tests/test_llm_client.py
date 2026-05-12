@@ -249,6 +249,8 @@ async def test_feedback_retry_recovers_above_threshold(profile, mock_http):
     assert "0.30" in feedback_msg
     assert "0.50" in feedback_msg
     assert second_call_msgs[-1]["role"] == "user"
+    assert second_call_msgs[-2]["role"] == "assistant"
+    assert json.loads(second_call_msgs[-2]["content"]) == VALID_RESPONSE
 
 
 @pytest.mark.asyncio
