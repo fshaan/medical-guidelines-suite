@@ -286,6 +286,42 @@ async def test_async_qmd_aclose_error_still_kills_process(
 @pytest.mark.asyncio
 @patch("scripts.retriever.subprocess.Popen")
 @patch("scripts.retriever.httpx.AsyncClient")
+async def test_async_qmd_wait_for_ready_tolerates_read_timeout(
+    mock_client_cls, mock_popen
+):
+    """WR-01 回归：_wait_for_ready_async 启动期间收到 httpx.ReadTimeout（半开连接，
+    QMD 接受连接但还没 ready）时必须 retry，而不是直接传播到 caller。
+    """
+    import httpx
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    mock_popen.return_value = proc
+
+    posts = [
+        httpx.ReadTimeout("read timed out"),
+        httpx.RemoteProtocolError("server disconnected"),
+        _mk_http_response(session_id="s1"),
+    ]
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=posts)
+    mock_client.aclose = AsyncMock()
+    mock_client_cls.return_value = mock_client
+
+    from scripts.retriever import AsyncQMDService
+
+    with patch("scripts.retriever.asyncio.sleep", new=AsyncMock()):
+        async with AsyncQMDService(port=9999) as svc:
+            assert svc._session_id == "s1"
+
+    # 三次尝试：2 transient transport errors + 1 success
+    assert mock_client.post.await_count == 3
+
+
+@pytest.mark.asyncio
+@patch("scripts.retriever.subprocess.Popen")
+@patch("scripts.retriever.httpx.AsyncClient")
 async def test_async_qmd_aclose_error_does_not_overwrite_caller_exception(
     mock_client_cls, mock_popen
 ):

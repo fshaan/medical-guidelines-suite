@@ -328,7 +328,12 @@ class AsyncQMDService:
                         raise QMDStartupError("QMD exited immediately after health check")
                     self._session_id = resp.headers.get("mcp-session-id")
                     return
-            except httpx.ConnectError:
+            except httpx.TransportError:
+                # 涵盖 ConnectError / ReadTimeout / RemoteProtocolError /
+                # ConnectTimeout / WriteTimeout / PoolTimeout 等所有传输层失败。
+                # QMD 启动慢时常见「先 accept 再卡在 ready 前」，会抛
+                # ReadTimeout/RemoteProtocolError，仅 catch ConnectError 会让
+                # 这些 transient 错误绕过 30s deadline 保护。
                 pass
             await asyncio.sleep(0.5)
         raise QMDStartupError(f"QMD not ready after {timeout}s")
