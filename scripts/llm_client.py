@@ -3,7 +3,7 @@
 Provides AsyncLLMClient for OpenAI-compatible structured output via
 response_format={"type":"json_schema","strict":true}. Includes three
 independent retry paths (transport / schema / feedback) and the
-PATIENT_RECOMMENDATION_SCHEMA with 23-item evidence_level enum.
+PATIENT_RECOMMENDATION_SCHEMA with 27-item evidence_level enum.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Optional, Union
 
 import httpx
 import jsonschema
@@ -35,7 +35,7 @@ _DEFAULT_YAML_PATH = Path(__file__).resolve().parent.parent / "config" / "llm_pr
 class LLMFailure(Exception):
     """LLM call failed after all retries exhausted."""
 
-    def __init__(self, patient_id: str | None, last_error: Exception, stage: str):
+    def __init__(self, patient_id: Optional[str], last_error: Exception, stage: str):
         self.patient_id = patient_id
         self.last_error = last_error
         self.stage = stage
@@ -47,7 +47,7 @@ class LLMFailure(Exception):
 class SchemaError(Exception):
     """Internal control-flow exception for schema validation failures."""
 
-    def __init__(self, message: str, patient_id: str | None = None):
+    def __init__(self, message: str, patient_id: Optional[str] = None):
         super().__init__(message)
         self.patient_id = patient_id
 
@@ -140,9 +140,9 @@ class LLMProfile:
     @classmethod
     def from_env(
         cls,
-        name: str | None = None,
+        name: Optional[str] = None,
         *,
-        yaml_path: "str | os.PathLike | None" = None,
+        yaml_path: Optional[Union[str, os.PathLike]] = None,
     ) -> "LLMProfile":
         env = os.environ
         resolved_name = name if name is not None else env.get(_ENV_PROFILE, _DEFAULT_PROFILE_NAME)
@@ -195,7 +195,7 @@ class LLMProfile:
 
 
 def _load_profiles_yaml(
-    path: "str | os.PathLike | None" = None,
+    path: Optional[Union[str, os.PathLike]] = None,
 ) -> dict:
     p = Path(path) if path is not None else _DEFAULT_YAML_PATH
     if not p.exists():
@@ -219,7 +219,7 @@ class AsyncLLMClient:
         profile: LLMProfile,
         http: httpx.AsyncClient,
         *,
-        semaphore: asyncio.Semaphore | None = None,
+        semaphore: Optional[asyncio.Semaphore] = None,
     ):
         self.profile = profile
         self._http = http
@@ -269,7 +269,7 @@ class AsyncLLMClient:
     async def _post_with_retry(self, messages, schema, schema_name, patient_id):
         payload = self._build_payload(messages, schema, schema_name)
         url = f"{self.profile.base_url.rstrip('/')}/chat/completions"
-        last_error: Exception | None = None
+        last_error: Optional[Exception] = None
         for attempt in range(4):
             try:
                 resp = await self._http.post(
@@ -309,7 +309,7 @@ class AsyncLLMClient:
         schema: dict,
         *,
         schema_name: str = "patient_recommendation",
-        patient_id: str | None = None,
+        patient_id: Optional[str] = None,
     ) -> dict:
         async with self._sem:
             try:
@@ -332,8 +332,8 @@ class AsyncLLMClient:
         schema_name: str = "patient_recommendation",
         feedback_check: Callable[[dict], float],
         threshold: float = 0.5,
-        feedback_template: str | None = None,
-        patient_id: str | None = None,
+        feedback_template: Optional[str] = None,
+        patient_id: Optional[str] = None,
     ) -> tuple[dict, float, str]:
         result = await self.complete_structured(
             messages, schema, schema_name=schema_name, patient_id=patient_id,
