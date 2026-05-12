@@ -20,6 +20,18 @@ import yaml
 from pathlib import Path
 
 
+_ENV_PROFILE = "LLM_PROFILE"
+_ENV_BASE_URL = "LLM_BASE_URL"
+_ENV_MODEL = "LLM_MODEL"
+_ENV_API_KEY_ENV = "LLM_API_KEY_ENV"
+_ENV_TIMEOUT = "LLM_TIMEOUT"
+_ENV_STRUCTURED_MODE = "LLM_STRUCTURED_MODE"
+_ENV_CONCURRENCY = "LLM_CONCURRENCY"
+
+_DEFAULT_PROFILE_NAME = "qwen3-vllm-lan"
+_DEFAULT_YAML_PATH = Path(__file__).resolve().parent.parent / "config" / "llm_profiles.yaml"
+
+
 class LLMFailure(Exception):
     """LLM call failed after all retries exhausted."""
 
@@ -180,19 +192,6 @@ class LLMProfile:
             structured_mode=structured_mode,
             concurrency=concurrency,
         )
-
-
-_DEFAULT_YAML_PATH = Path("config/llm_profiles.yaml")
-
-_ENV_PROFILE = "LLM_PROFILE"
-_ENV_BASE_URL = "LLM_BASE_URL"
-_ENV_MODEL = "LLM_MODEL"
-_ENV_API_KEY_ENV = "LLM_API_KEY_ENV"
-_ENV_TIMEOUT = "LLM_TIMEOUT"
-_ENV_STRUCTURED_MODE = "LLM_STRUCTURED_MODE"
-_ENV_CONCURRENCY = "LLM_CONCURRENCY"
-
-_DEFAULT_PROFILE_NAME = "qwen3-vllm-lan"
 
 
 def _load_profiles_yaml(
