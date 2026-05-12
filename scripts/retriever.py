@@ -224,6 +224,15 @@ class AsyncQMDService:
 
     Phase 1 (RTR-01..04): 第一段异步代码，与同步 QMDService 共存。
     Phase 3 pipeline.py 通过注入式 semaphore/http_client 共享并发预算。
+
+    Lifecycle contracts (IN-03):
+    - Default (no http_client injected): __aenter__ creates an httpx.AsyncClient
+      and __aexit__ closes it. self._owns_http = True.
+    - Injected http_client: the client is borrowed; __aexit__ does NOT aclose
+      it. Caller owns the lifecycle and must close/dispose the client externally
+      after all AsyncQMDService usage completes.
+    - Injected semaphore: caller-owned; AsyncQMDService never touches its state
+      outside `async with self._sem`.
     """
 
     def __init__(

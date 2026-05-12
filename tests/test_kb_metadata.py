@@ -13,6 +13,7 @@ import yaml
 
 from scripts.kb_metadata import (
     _SYNONYM_SEED,
+    _extract_year,
     build_sidecar,
     filter_chunks_by_disease,
     filter_orgs_by_disease,
@@ -21,6 +22,24 @@ from scripts.kb_metadata import (
     normalize_disease,
     seed_synonym_map,
 )
+
+
+# ── _extract_year (IN-02) ───────────────────────────────────────────────
+
+def test_extract_year_takes_max_in_range():
+    """IN-02: 取最大年份，避免被历史 cohort / ICD 编号污染。"""
+    assert _extract_year("# Gastric Cancer 2026 — from 1999 cohort") == "2026"
+
+
+def test_extract_year_filters_out_of_range():
+    """1990-2100 之外的 4 位数字（如 ICD 编号、化合物号）必须丢弃。"""
+    assert _extract_year("# NCCN 2026 ICD-10 C16.9 (1234)") == "2026"
+    assert _extract_year("# Compound 9999 protocol") == ""
+
+
+def test_extract_year_empty_when_no_match():
+    assert _extract_year("") == ""
+    assert _extract_year("# No year here") == ""
 
 
 # ── 词表 seed 完整性 ──────────────────────────────────────────────────

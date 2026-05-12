@@ -176,6 +176,10 @@ async def test_async_qmd_concurrent_query_ordering(mock_client_cls, mock_popen):
         if body.get("method") == "initialize":
             return _mk_http_response()
         q = body["params"]["arguments"]["intent"]
+        # IN-01: 强制乱序完成——q3 比 q1 提前 ~40ms 返回。asyncio.gather
+        # 必须仍按 input order 返回结果，否则保序保证被破坏。
+        delay = (3 - int(q[1])) * 0.02
+        await asyncio.sleep(delay)
         return _mk_http_response(body={
             "result": {"structuredContent": {"results": [
                 {"snippet": q, "file": "f.md", "score": 1.0, "context": ""}

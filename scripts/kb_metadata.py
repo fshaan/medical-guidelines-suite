@@ -212,11 +212,17 @@ def filter_chunks_by_disease(
 
 
 def _extract_year(text: str) -> str:
-    """从 H1 行抽末位 4 位数字年份。"""
+    """从 H1 行抽最大 4 位年份（1990-2100 区间）。
+
+    IN-02: 原实现取「最后一个匹配」会被 H1 行里的 ICD-10 编号 / 化合物号
+    / 历史 cohort 年份覆盖（如 "Gastric Cancer 2026 — supplemented from
+    1999 cohort" 错误返回 1999；"NCCN 2026 ICD-10 C16.9 (1234)" 返回 1234）。
+    改为「最大值 + 合理年份范围过滤」更鲁棒。
+    """
     if not text:
         return ""
-    matches = _YEAR_RE.findall(text)
-    return matches[-1] if matches else ""
+    years = [int(m) for m in _YEAR_RE.findall(text) if 1990 <= int(m) <= 2100]
+    return str(max(years)) if years else ""
 
 
 def _strip_org_prefix(stem: str, org_name: str) -> str:
