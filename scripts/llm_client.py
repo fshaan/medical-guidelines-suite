@@ -264,6 +264,7 @@ class AsyncLLMClient:
             try:
                 resp = await self._http.post(
                     url, json=payload, headers=self._auth_headers,
+                    timeout=self.profile.timeout_s,
                 )
                 if resp.status_code == 429 or resp.status_code >= 500:
                     last_error = httpx.HTTPStatusError(

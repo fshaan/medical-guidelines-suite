@@ -310,6 +310,16 @@ async def test_api_key_resolved_lazily(profile, mock_http, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_timeout_applied_from_profile(profile, mock_http):
+    mock_http.post.return_value = _mk_resp()
+    client = AsyncLLMClient(profile, http=mock_http)
+    await client.complete_structured(
+        [{"role": "user", "content": "q"}], PATIENT_RECOMMENDATION_SCHEMA,
+    )
+    assert mock_http.post.await_args.kwargs["timeout"] == profile.timeout_s
+
+
+@pytest.mark.asyncio
 async def test_api_key_missing_no_auth_header(profile, mock_http, monkeypatch):
     monkeypatch.delenv("TEST_API_KEY", raising=False)
     mock_http.post.return_value = _mk_resp()
