@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v3.1
 milestone_name: milestone
-status: phase-complete
-last_updated: "2026-05-12T09:03:40.256Z"
+status: in-progress
+last_updated: "2026-05-12T09:46:00.000Z"
 progress:
   total_phases: 4
   completed_phases: 2
-  total_plans: 5
-  completed_plans: 5
-  percent: 100
+  total_plans: 8
+  completed_plans: 6
+  percent: 75
 ---
 
 # STATE: medical-guidelines-suite
@@ -22,9 +22,9 @@ progress:
 
 ## Current Position
 
-- **Phase**: 2 — LLM Client + Schema + Unit Tests ✅
-- **Status**: Phase 2 complete (all 2 plans executed, 247 tests passing)
-- **Progress**: `[█████░░░░░] 2/4 phases · 5/5 plans · 17/37 requirements delivered`
+- **Phase**: 3 — Pipeline + run Subcommand + Interface Extension
+- **Status**: Phase 3 executing (Plan 01 complete, Plan 02 next)
+- **Progress**: `[████████░░] 2/4 phases · 6/8 plans · 23/37 requirements delivered`
 
 ## Performance Metrics
 
@@ -50,6 +50,10 @@ progress:
 - D-01 释义：AsyncQMDService 独立 httpx 路径，同步 QMDService 保留 requests，调用方层面 async-only
 - D-03 默认 Semaphore(8)，注入式 semaphore 参数可覆盖
 - D-04 session retry 仅一次：400或缺header触发re-initialize+重发
+- D-05 异常分级：LLMFailure → KeyError/ValueError → CancelledError(raise)，禁止 except Exception
+- D-07 try/finally 强制写 rag_results.json（Ctrl-C 安全）
+- D-08 _scan_resume 两段扫描 + _failed unlink
+- D-14 build_patient_prompt 迁移自 generate_batch_prompt 单患者形态
 
 ### Todos
 
@@ -58,23 +62,26 @@ progress:
 - [x] Plan 01-03: cmd_index 接入 build_sidecar — ✅
 - [x] Plan 02-01: AsyncLLMClient + PATIENT_RECOMMENDATION_SCHEMA + 三类重试 + 18 unit tests — ✅
 - [x] Plan 02-02: LLMProfile.from_env + env/yaml 三级优先级 + config/llm_profiles.yaml + 11 unit tests — ✅
+- [x] Plan 03-01: pipeline.py 核心 (run_pipeline + _run_one_patient + helpers) — ✅ 275 tests
+- [ ] Plan 03-02: batch_pipeline.py CLI 改造 (run 子命令 + hidden + --patients-dir)
+- [ ] Plan 03-03: E2E smoke + 真实环境验收清单
 
 ### Blockers
 
 无。
 
-### Phase 2 交付物
+### Phase 3 Plan 01 交付物
 
-- `scripts/llm_client.py`（~340 LOC）— AsyncLLMClient + LLMProfile + PATIENT_RECOMMENDATION_SCHEMA + 三类重试 + from_env
-- `config/llm_profiles.yaml` — qwen3-vllm-lan + deepseek-cloud 两 profile
-- `tests/test_llm_client.py`（18 cases）+ `tests/test_llm_profile.py`（11 cases）
-- 247 tests passing, 0 failures
-- Requirements delivered: LLM-01..05 + CFG-01/02 (7/7)
+- `scripts/pipeline.py`（432 LOC）— run_pipeline + _run_one_patient + 11 helper 函数
+- `tests/test_pipeline_helpers.py`（16 cases）+ `tests/test_pipeline.py`（7 cases）
+- `tests/fixtures/mock_qmd_hit.json` + `tests/fixtures/mock_patient.json`
+- 275 tests passing, 0 failures
+- Requirements delivered: PIP-01..06 (6/18 Phase 3 reqs)
 
 ## Session Continuity
 
-- **本次会话**：2026-05-12 Phase 2 全部 2 plans 执行完成（247 tests, 零回归）
-- **下次会话入口**：Phase 3 规划 `/gsd-plan-phase 3` 或人工端到端验证
+- **本次会话**：2026-05-12 Phase 3 执行中
+- **当前状态**：Phase 3 Plan 01 完成（275 tests），Plan 02 待执行
 
 ---
-*Phase 2 completed: 2026-05-12*
+*Phase 3 Plan 01 completed: 2026-05-12*
