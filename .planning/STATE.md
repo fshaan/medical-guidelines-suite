@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v3.1
 milestone_name: milestone
 status: in-progress
-last_updated: "2026-05-12T09:46:00.000Z"
+last_updated: "2026-05-12T10:22:00.000Z"
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 8
-  completed_plans: 6
-  percent: 75
+  completed_plans: 7
+  percent: 88
 ---
 
 # STATE: medical-guidelines-suite
@@ -23,8 +23,8 @@ progress:
 ## Current Position
 
 - **Phase**: 3 — Pipeline + run Subcommand + Interface Extension
-- **Status**: Phase 3 executing (Plan 01 complete, Plan 02 next)
-- **Progress**: `[████████░░] 2/4 phases · 6/8 plans · 23/37 requirements delivered`
+- **Status**: Phase 3 executing (Plan 01+02 complete, Plan 03 next)
+- **Progress**: `[████████░░] 2/4 phases · 7/8 plans · 29/37 requirements delivered`
 
 ## Performance Metrics
 
@@ -54,6 +54,10 @@ progress:
 - D-07 try/finally 强制写 rag_results.json（Ctrl-C 安全）
 - D-08 _scan_resume 两段扫描 + _failed unlink
 - D-14 build_patient_prompt 迁移自 generate_batch_prompt 单患者形态
+- D-10 run 子命令 7 个参数（patients/output-dir/llm-profile/concurrency-patients/concurrency-qmd/resume/kb-root）
+- D-11 validate/generate --patients-dir 互斥组 + --input deprecated
+- D-13 4 旧子命令 hidden via argparse.SUPPRESS
+- Python 3.9: argparse.SUPPRESS 在 subparser 中只隐藏描述文本，名字仍在 {choices} 中
 
 ### Todos
 
@@ -63,25 +67,24 @@ progress:
 - [x] Plan 02-01: AsyncLLMClient + PATIENT_RECOMMENDATION_SCHEMA + 三类重试 + 18 unit tests — ✅
 - [x] Plan 02-02: LLMProfile.from_env + env/yaml 三级优先级 + config/llm_profiles.yaml + 11 unit tests — ✅
 - [x] Plan 03-01: pipeline.py 核心 (run_pipeline + _run_one_patient + helpers) — ✅ 275 tests
-- [ ] Plan 03-02: batch_pipeline.py CLI 改造 (run 子命令 + hidden + --patients-dir)
+- [x] Plan 03-02: batch_pipeline.py CLI 改造 (run 子命令 + hidden + --patients-dir) — ✅ 286 tests
 - [ ] Plan 03-03: E2E smoke + 真实环境验收清单
 
 ### Blockers
 
 无。
 
-### Phase 3 Plan 01 交付物
+### Phase 3 Plan 02 交付物
 
-- `scripts/pipeline.py`（432 LOC）— run_pipeline + _run_one_patient + 11 helper 函数
-- `tests/test_pipeline_helpers.py`（16 cases）+ `tests/test_pipeline.py`（7 cases）
-- `tests/fixtures/mock_qmd_hit.json` + `tests/fixtures/mock_patient.json`
-- 275 tests passing, 0 failures
-- Requirements delivered: PIP-01..06 (6/18 Phase 3 reqs)
+- `scripts/batch_pipeline.py` — run 子命令 + 4 hidden + 2 互斥组 + dispatch 分支 + cmd_validate/generate 分支 + 2 新私有函数
+- `tests/test_cli_subcommands.py`（11 cases）
+- 286 tests passing, 0 failures
+- Requirements delivered: CLI-01..05 + CFG-03 (6/18 Phase 3 reqs)
 
 ## Session Continuity
 
 - **本次会话**：2026-05-12 Phase 3 执行中
-- **当前状态**：Phase 3 Plan 01 完成（275 tests），Plan 02 待执行
+- **当前状态**：Phase 3 Plan 01+02 完成（286 tests），Plan 03 待执行（E2E 验收需真实环境）
 
 ---
-*Phase 3 Plan 01 completed: 2026-05-12*
+*Phase 3 Plan 02 completed: 2026-05-12*
