@@ -192,6 +192,17 @@ def test_build_sidecar_chunk_key_uses_qmd_url_lowercase(mock_kb):
     assert all(k.startswith("qmd://nccn/") for k in keys), keys
     assert all(k == k.lower() for k in keys), "chunks.json keys must be lowercased"
 
+def test_build_sidecar_writes_atomically_no_tmp_residue(mock_kb):
+    """WR-05 回归：build_sidecar 走 tmp + rename 路径，正常完成后 .tmp 不残留。"""
+    orgs_found = [(
+        "NCCN", mock_kb / "NCCN", sorted((mock_kb / "NCCN" / "extracted").glob("*.md"))
+    )]
+    build_sidecar(mock_kb, orgs_found)
+    meta = mock_kb / ".metadata"
+    residue = list(meta.glob("*.tmp")) + list(meta.glob("*.json.tmp"))
+    assert residue == [], f".tmp residue not cleaned up: {residue}"
+
+
 def test_build_sidecar_skips_existing_synonym_map(mock_kb):
     # 先手工写 overrides
     meta = mock_kb / ".metadata"

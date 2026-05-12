@@ -221,6 +221,20 @@ def _strip_org_prefix(stem: str, org_name: str) -> str:
     return stem
 
 
+def _atomic_write_json(path: Path, data: dict) -> None:
+    """tmp + rename 原子写：同目录写 .tmp 文件再 Path.replace（POSIX rename 原子）。
+
+    避免 Path.write_text 在并发 cmd_index 下被中断而产生半截 JSON——下游
+    pipeline.py json.load() 一旦读到坏文件会持续 JSONDecodeError。
+    """
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
 def build_sidecar(
     kb_root: Path,
     orgs_found: list[tuple[str, Path, list[Path]]],
@@ -269,14 +283,11 @@ def build_sidecar(
     coverage_path = meta_dir / "org_disease_coverage.json"
     synonym_path = meta_dir / "synonym_map.yaml"
 
-    chunks_path.write_text(
-        json.dumps(chunks, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    coverage_path.write_text(
-        json.dumps(coverage_out, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    # WR-05: tmp + rename 原子写盘。两个 cmd_index 并发跑（脚本化重建场景）
+    # 时，Path.write_text 不原子会写出半截 JSON，下游 pipeline.py 加载时
+    # JSONDecodeError 且持续读到坏文件。POSIX rename 在 same-filesystem 下原子。
+    _atomic_write_json(chunks_path, chunks)
+    _atomic_write_json(coverage_path, coverage_out)
 
     return {
         "chunks_path": chunks_path,
