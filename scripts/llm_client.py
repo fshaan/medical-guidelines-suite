@@ -79,6 +79,7 @@ PATIENT_RECOMMENDATION_SCHEMA: dict = {
                                 "score": {"type": "number"},
                             },
                             "required": ["source_file", "score"],
+                            "additionalProperties": False,
                         },
                     },
                 },
@@ -86,12 +87,14 @@ PATIENT_RECOMMENDATION_SCHEMA: dict = {
                     "guideline", "guideline_version", "recommendation",
                     "evidence_level", "source_file", "retrieval_sources",
                 ],
+                "additionalProperties": False,
             },
         },
         "consensus": {"type": "array", "items": {"type": "string"}},
         "differences": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["guideline_results", "consensus", "differences"],
+    "additionalProperties": False,
 }
 
 _DEFAULT_FEEDBACK_TEMPLATE = (

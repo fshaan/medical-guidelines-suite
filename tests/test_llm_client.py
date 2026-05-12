@@ -105,6 +105,24 @@ def test_evidence_level_enum_completeness():
     assert enum_in_schema == _EVIDENCE_LEVEL_ENUM
 
 
+def test_schema_rejects_additional_properties():
+    import jsonschema
+    extra_at_root = dict(VALID_RESPONSE)
+    extra_at_root["hallucinated_field"] = "ghost"
+    with pytest.raises(jsonschema.ValidationError, match="hallucinated_field"):
+        jsonschema.validate(extra_at_root, PATIENT_RECOMMENDATION_SCHEMA)
+
+    extra_in_item = json.loads(json.dumps(VALID_RESPONSE))
+    extra_in_item["guideline_results"][0]["bogus"] = "x"
+    with pytest.raises(jsonschema.ValidationError, match="bogus"):
+        jsonschema.validate(extra_in_item, PATIENT_RECOMMENDATION_SCHEMA)
+
+    extra_in_source = json.loads(json.dumps(VALID_RESPONSE))
+    extra_in_source["guideline_results"][0]["retrieval_sources"][0]["fake"] = 1
+    with pytest.raises(jsonschema.ValidationError, match="fake"):
+        jsonschema.validate(extra_in_source, PATIENT_RECOMMENDATION_SCHEMA)
+
+
 def test_schema_required_fields():
     import jsonschema
     bad = {
