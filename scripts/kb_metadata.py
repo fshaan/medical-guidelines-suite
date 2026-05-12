@@ -268,9 +268,12 @@ def build_sidecar(
                 version = _extract_year(first_line)
             except OSError:
                 version = ""
+            # WR-03 PHI 防御：org 字段写入 lowercase（与 key 一致）。生产 KB
+            # 目录名可能含中文医院名/拼音姓名前缀，原大小写直接写入侧车 JSON
+            # 会让 PHI 进入 git-trackable 文件。lowercase + 仅用作内部标识。
             chunks[key] = {
                 "disease_tags": tags,
-                "org": org_name,
+                "org": org_name.lower(),
                 "guideline_version": version,
             }
 

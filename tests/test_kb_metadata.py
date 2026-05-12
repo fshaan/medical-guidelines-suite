@@ -179,8 +179,9 @@ def test_build_sidecar_creates_three_files(mock_kb):
     )
     # 文件名是 NCCN_GastricCancer.md → token 切分含 "gastriccancer"
     # 规则化后 "gastriccancer" → 剥 "cancer" → "gastric" → 命中
-    # 因此 NCCN/ESMO/CSCO 三个 org 的 coverage 都应含 "gastric"
-    assert "gastric" in coverage.get("NCCN", [])
+    # 因此 nccn/esmo/csco 三个 org 的 coverage 都应含 "gastric"
+    # (WR-03 PHI 防御：coverage keys 与 chunks[*].org 一致，全部 lowercase)
+    assert "gastric" in coverage.get("nccn", [])
     assert summary["n_chunks"] == 3
     assert summary["n_orgs"] == 3
 
@@ -191,6 +192,30 @@ def test_build_sidecar_chunk_key_uses_qmd_url_lowercase(mock_kb):
     keys = list(chunks.keys())
     assert all(k.startswith("qmd://nccn/") for k in keys), keys
     assert all(k == k.lower() for k in keys), "chunks.json keys must be lowercased"
+
+def test_build_sidecar_org_field_is_lowercase(mock_kb):
+    """WR-03 PHI 防御：chunks[*].org 与 coverage keys 必须 lowercase，
+    避免生产 KB 目录名中可能含的中文/PHI 进入 git-trackable JSON。
+    """
+    orgs_found = [(
+        "NCCN", mock_kb / "NCCN", sorted((mock_kb / "NCCN" / "extracted").glob("*.md"))
+    )]
+    build_sidecar(mock_kb, orgs_found)
+
+    chunks = json.loads((mock_kb / ".metadata" / "chunks.json").read_text(encoding="utf-8"))
+    for key, meta in chunks.items():
+        assert meta["org"] == meta["org"].lower(), (
+            f"chunks[{key}].org='{meta['org']}' contains uppercase — PHI risk"
+        )
+
+    coverage = json.loads(
+        (mock_kb / ".metadata" / "org_disease_coverage.json").read_text(encoding="utf-8")
+    )
+    for org_key in coverage:
+        assert org_key == org_key.lower(), (
+            f"coverage key '{org_key}' contains uppercase — PHI risk"
+        )
+
 
 def test_build_sidecar_writes_atomically_no_tmp_residue(mock_kb):
     """WR-05 回归：build_sidecar 走 tmp + rename 路径，正常完成后 .tmp 不残留。"""
