@@ -14,12 +14,14 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import locale
 import os
 import re
 import subprocess
 import sys
+import warnings
 from datetime import date, datetime
 from pathlib import Path
 
@@ -1694,8 +1696,109 @@ def cmd_verify_batch(args):
     sys.exit(1 if total_fail > 0 else 0)
 
 
+def _validate_patients_dir(patients_dir: Path, args) -> None:
+    """验证 patients/ 目录下所有 shard 的质量与完整性（v3.1 主路径）。
+
+    每个 *.json 文件是一个 per-patient shard，含 patient_id / status / result 等字段。
+    """
+    if not patients_dir.is_dir():
+        print(f"目录不存在: {patients_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    shard_files = sorted(patients_dir.glob("*.json"))
+    if not shard_files:
+        print(f"目录中无 JSON 文件: {patients_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    errors = []
+    warnings_list = []  # type: List[str]
+
+    actual_ids = set()
+
+    for sf in shard_files:
+        try:
+            shard = json.loads(sf.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            errors.append(f"{sf.name}: JSON 解析失败 ({e})")
+            continue
+
+        pid = shard.get("patient_id", sf.stem)
+        actual_ids.add(pid)
+
+        status = shard.get("status", "")
+        if status not in ("ok", "partial"):
+            errors.append(f"[{pid}] 无效 status: '{status}'（期望 ok/partial）")
+
+        result = shard.get("result")
+        if not result:
+            errors.append(f"[{pid}] 缺失 result 字段")
+            continue
+
+        # 检查 guideline_results
+        grs = result.get("guideline_results", []) or []
+        for gi, gr in enumerate(grs, 1):
+            rec = gr.get("recommendation", "")
+            if len(rec) < MIN_REC_LENGTH:
+                warnings_list.append(
+                    f"[{pid}] guideline {gi} 推荐过短 ({len(rec)}字)"
+                )
+            if not gr.get("evidence_level"):
+                warnings_list.append(f"[{pid}] guideline {gi} 缺失证据等级")
+            if not gr.get("source_file"):
+                warnings_list.append(f"[{pid}] guideline {gi} 缺失来源文件")
+            if not gr.get("retrieval_sources"):
+                warnings_list.append(f"[{pid}] guideline {gi} 缺失检索来源")
+
+        # citation_coverage 检查
+        cov = shard.get("citation_coverage")
+        if cov is not None and cov < MIN_CITATION_COVERAGE:
+            if status != "partial":
+                warnings_list.append(
+                    f"[{pid}] 引用覆盖率过低 ({cov:.0%}, 要求 >= {MIN_CITATION_COVERAGE:.0%})"
+                )
+
+    # 完整性对比（可选 patients.json）
+    if getattr(args, "patients", None):
+        patients_path = Path(args.patients).resolve()
+        if patients_path.exists():
+            patients_data = json.loads(patients_path.read_text(encoding="utf-8"))
+            expected_ids = {p["patient_id"] for p in patients_data.get("patients", [])}
+            missing = expected_ids - actual_ids
+            if missing:
+                errors.append(
+                    f"缺失患者 ({len(missing)}): {', '.join(sorted(missing))}"
+                )
+
+    # 输出报告
+    print(f"验证结果: {len(shard_files)} 个患者 shard")
+    if errors:
+        print(f"\n  ✗ {len(errors)} 个错误:")
+        for e in errors:
+            print(f"    ✗ {e}")
+    if warnings_list:
+        print(f"\n  ⚠ {len(warnings_list)} 个警告:")
+        for w in warnings_list:
+            print(f"    ⚠ {w}")
+    if not errors and not warnings_list:
+        print(f"  ✓ 验证通过，数据完整")
+
+    sys.exit(1 if errors else 0)
+
+
 def cmd_validate(args):
-    """validate 子命令入口 — 检查 rag_results.json 质量与完整性"""
+    """validate 子命令入口 — 检查 rag_results.json 或 patients/ 目录质量与完整性"""
+    # v3.1 主路径: --patients-dir
+    if getattr(args, "patients_dir", None):
+        return _validate_patients_dir(Path(args.patients_dir).resolve(), args)
+
+    # v3.0 兼容路径: --input (deprecated)
+    if getattr(args, "input", None):
+        warnings.warn(
+            "--input is deprecated, use --patients-dir for v3.1 pipeline",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    # 原有逻辑继续执行
     input_path = Path(args.input).resolve()
     if not input_path.exists():
         print(f"文件不存在: {input_path}", file=sys.stderr)
@@ -1705,7 +1808,7 @@ def cmd_validate(args):
     results = data.get("results", [])
 
     errors = []
-    warnings = []
+    warn_list = []
 
     # 与 patients.json 对比完整性
     if args.patients:
@@ -1721,7 +1824,7 @@ def cmd_validate(args):
                     f"缺失患者 ({len(missing)}): {', '.join(sorted(missing))}"
                 )
             if extra:
-                warnings.append(f"多余患者 ({len(extra)}): {', '.join(sorted(extra))}")
+                warn_list.append(f"多余患者 ({len(extra)}): {', '.join(sorted(extra))}")
 
     # 逐患者检查
     rec_lengths = []
@@ -1743,39 +1846,39 @@ def cmd_validate(args):
         for qi, q in enumerate(questions, 1):
             grs = q.get("guideline_results", [])
             if not grs:
-                warnings.append(f"[{pid}] Q{qi} 无指南检索结果")
+                warn_list.append(f"[{pid}] Q{qi} 无指南检索结果")
 
             for g in grs:
                 rec = g.get("recommendation", "")
                 total_len += len(rec)
                 if len(rec) < MIN_REC_LENGTH:
-                    warnings.append(
+                    warn_list.append(
                         f"[{pid}] Q{qi} {g.get('guideline', '')} 推荐过短 ({len(rec)}字)"
                     )
                 if not g.get("evidence_level"):
-                    warnings.append(
+                    warn_list.append(
                         f"[{pid}] Q{qi} {g.get('guideline', '')} 缺失证据等级"
                     )
                 if not g.get("source_file"):
-                    warnings.append(
+                    warn_list.append(
                         f"[{pid}] Q{qi} {g.get('guideline', '')} 缺失来源文件"
                     )
                 if not g.get("retrieval_sources"):
-                    warnings.append(
+                    warn_list.append(
                         f"[{pid}] Q{qi} {g.get('guideline', '')} 缺失检索来源"
                     )
 
             if not q.get("consensus"):
-                warnings.append(f"[{pid}] Q{qi} 缺失共识分析")
+                warn_list.append(f"[{pid}] Q{qi} 缺失共识分析")
             if not q.get("differences"):
-                warnings.append(f"[{pid}] Q{qi} 缺失差异分析")
+                warn_list.append(f"[{pid}] Q{qi} 缺失差异分析")
 
         # citation_coverage check
         cov = r.get("citation_coverage")
         if isinstance(cov, str):
             cov = None  # skip string-formatted coverage from older batches
         if cov is not None and cov < MIN_CITATION_COVERAGE:
-            warnings.append(
+            warn_list.append(
                 f"[{pid}] 引用覆盖率过低 ({cov:.0%}, 要求 >= 50%)"
             )
 
@@ -1788,17 +1891,17 @@ def cmd_validate(args):
             avg_len = sum(lengths) / len(lengths)
             for pid, length in rec_lengths:
                 if length > 0 and length < avg_len * 0.3:
-                    warnings.append(
+                    warn_list.append(
                         f"[{pid}] 推荐总长度异常偏短 ({length}字 vs 平均 {avg_len:.0f}字)"
                     )
 
     # 跨批次相似度检测 (D9)
     cross_warnings = _check_cross_batch_similarity(results)
-    warnings.extend(cross_warnings)
+    warn_list.extend(cross_warnings)
 
     # 批次深度衰减检测 (L4)
     depth_warnings = _check_batch_depth_decay(results)
-    warnings.extend(depth_warnings)
+    warn_list.extend(depth_warnings)
 
     # 组织覆盖率检测 (§1.8)
     kb_profile_path = getattr(args, "kb_profile", None)
@@ -1810,7 +1913,7 @@ def cmd_validate(args):
                 known_orgs = plan_data.get("kb_profile", {}).get("orgs", [])
                 if known_orgs:
                     org_warnings = _check_org_coverage(results, known_orgs)
-                    warnings.extend(org_warnings)
+                    warn_list.extend(org_warnings)
             except (json.JSONDecodeError, KeyError):
                 pass
 
@@ -1820,11 +1923,11 @@ def cmd_validate(args):
         print(f"\n  ✗ {len(errors)} 个错误:")
         for e in errors:
             print(f"    ✗ {e}")
-    if warnings:
-        print(f"\n  ⚠ {len(warnings)} 个警告:")
-        for w in warnings:
+    if warn_list:
+        print(f"\n  ⚠ {len(warn_list)} 个警告:")
+        for w in warn_list:
             print(f"    ⚠ {w}")
-    if not errors and not warnings:
+    if not errors and not warn_list:
         print(f"  ✓ 验证通过，数据完整")
 
     sys.exit(1 if errors else 0)
@@ -2237,9 +2340,101 @@ def generate_md(data: dict, output_path: Path):
     print(f"  ✓ Markdown 报告: {output_path}")
 
 
+def _generate_from_patients_dir(
+    patients_dir: Path, output_dir: Path, fmt: str
+) -> None:
+    """从 patients/ 目录合并所有 shard 生成 aggregate Markdown 报告（v3.1 主路径）。
+
+    复用现有 md_escape / _evidence_level_meaning 等辅助函数。
+    """
+    if not patients_dir.is_dir():
+        print(f"目录不存在: {patients_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    shard_files = sorted(patients_dir.glob("*.json"))
+    if not shard_files:
+        print(f"目录中无 JSON 文件: {patients_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    parts = ["# 批量指南推荐报告\n"]
+
+    for sf in shard_files:
+        try:
+            shard = json.loads(sf.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            parts.append(f"\n## {sf.stem}\n\n> 加载失败: {e}\n")
+            continue
+
+        pid = shard.get("patient_id", sf.stem)
+        result = shard.get("result", {})
+
+        # 患者基本信息 — 从 result 中提取（如果有）
+        patient_name = result.get("patient_name", pid)
+        disease_type = result.get("disease_type", "")
+        diagnosis_summary = result.get("diagnosis_summary", "")
+
+        parts.append(f"\n## 患者 {patient_name} ({pid})\n")
+        if disease_type:
+            parts.append(f"- **病种**: {md_escape(disease_type)}\n")
+        if diagnosis_summary:
+            parts.append(f"- **诊断**: {md_escape(diagnosis_summary)}\n")
+
+        status = shard.get("status", "unknown")
+        cov = shard.get("citation_coverage")
+        parts.append(f"- **状态**: {status}")
+        if cov is not None:
+            parts.append(f"  | **引用覆盖率**: {cov:.0%}")
+        parts.append("\n")
+
+        # 跨指南推荐表格
+        grs = result.get("guideline_results", []) or []
+        if grs:
+            parts.append("\n| 指南 | 推荐 | 证据等级 | 来源 |\n")
+            parts.append("|------|------|---------|------|\n")
+            for gr in grs:
+                guideline = md_escape(gr.get("guideline", ""))
+                rec = md_escape(gr.get("recommendation", ""))
+                level = md_escape(gr.get("evidence_level", ""))
+                source = md_escape_path(gr.get("source_file", ""))
+                parts.append(f"| {guideline} | {rec} | {level} | {source} |\n")
+
+        # 共识 / 差异
+        consensus = _normalize_to_list(result.get("consensus", []))
+        differences = _normalize_to_list(result.get("differences", []))
+        if consensus:
+            parts.append("\n**共识**:\n")
+            for c in consensus:
+                parts.append(f"- {md_escape(c)}\n")
+        if differences:
+            parts.append("\n**差异**:\n")
+            for d in differences:
+                parts.append(f"- {md_escape(d)}\n")
+
+    safe_date = re.sub(r"[^\w-]", "", str(date.today()))
+    filename = f"批量指南推荐报告_{safe_date}.md"
+    (output_dir / filename).write_text("".join(parts), encoding="utf-8")
+    print(f"\n生成完成 → {output_dir}/{filename}")
+
+
 def cmd_generate(args):
     """generate 子命令入口"""
-    import warnings
+    # v3.1 主路径: --patients-dir
+    if getattr(args, "patients_dir", None):
+        return _generate_from_patients_dir(
+            Path(args.patients_dir).resolve(),
+            Path(args.output_dir).resolve(),
+            args.format,
+        )
+
+    # v3.0 兼容路径: --input (deprecated warning)
+    if getattr(args, "input", None):
+        warnings.warn(
+            "--input is deprecated, use --patients-dir for v3.1 pipeline",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     input_path = Path(args.input).resolve()
     if not input_path.exists():
@@ -2288,8 +2483,39 @@ def main():
         "--output", default="Output/patients.json", help="输出 JSON 路径"
     )
 
-    # split
-    p_split = sub.add_parser("split", help="将 patients.json 分成多个批次文件")
+    # run (NEW — Phase 3 ship gate, CLI-01 + CFG-03 + D-10)
+    p_run = sub.add_parser("run", help="按患者并发流水线（v3.1 主路径）")
+    p_run.add_argument("--patients", required=True, help="patients.json 路径（parse 输出）")
+    p_run.add_argument(
+        "--output-dir", required=True,
+        help="输出目录（含 patients/ _failed/ rag_results.json）",
+    )
+    p_run.add_argument(
+        "--llm-profile",
+        default=os.environ.get("LLM_PROFILE", "qwen3-vllm-lan"),
+        help="LLM profile 名（默认 env LLM_PROFILE 或 qwen3-vllm-lan）",
+    )
+    p_run.add_argument(
+        "--concurrency-patients",
+        type=int,
+        default=int(os.environ.get("PIPELINE_CONCURRENCY_PATIENTS", "5")),
+        help="患者级并发上限（默认 env 或 5）",
+    )
+    p_run.add_argument(
+        "--concurrency-qmd",
+        type=int,
+        default=int(os.environ.get("PIPELINE_CONCURRENCY_QMD", "8")),
+        help="QMD 在飞请求上限（默认 env 或 8）",
+    )
+    p_run.add_argument("--resume", action="store_true", help="跳过已完成 patients 并重试 _failed/")
+    p_run.add_argument(
+        "--kb-root",
+        default=os.environ.get("MEDICAL_GUIDELINES_DIR"),
+        help="知识库根（默认 env MEDICAL_GUIDELINES_DIR）",
+    )
+
+    # split (Phase 3: hidden, Phase 4 删除)
+    p_split = sub.add_parser("split", help=argparse.SUPPRESS)
     p_split.add_argument("--input", required=True, help="patients.json 路径")
     p_split.add_argument(
         "--batch-size", type=int, default=5, help="每批患者数 (默认 5)"
@@ -2298,10 +2524,8 @@ def main():
         "--output-dir", default="Output/batches", help="批次文件输出目录"
     )
 
-    # orchestrate
-    p_orch = sub.add_parser(
-        "orchestrate", help="自动编排批处理流程（扫描知识库+生成 prompt）"
-    )
+    # orchestrate (Phase 3: hidden)
+    p_orch = sub.add_parser("orchestrate", help=argparse.SUPPRESS)
     p_orch.add_argument("--patients", required=True, help="patients.json 路径")
     p_orch.add_argument("--kb-root", default=None, help="知识库根路径（可选）")
     p_orch.add_argument("--output-dir", default="Output/batches", help="输出目录")
@@ -2313,8 +2537,8 @@ def main():
         help="单个 prompt 最大 token 数 (默认 80000)",
     )
 
-    # merge
-    p_merge = sub.add_parser("merge", help="合并批次结果为 rag_results.json")
+    # merge (Phase 3: hidden)
+    p_merge = sub.add_parser("merge", help=argparse.SUPPRESS)
     p_merge.add_argument("--input-dir", required=True, help="批次结果所在目录")
     p_merge.add_argument(
         "--output", default="Output/rag_results.json", help="合并输出路径"
@@ -2325,9 +2549,11 @@ def main():
         help="patients.json 路径（可选，用于回注患者元数据）",
     )
 
-    # validate
+    # validate (CLI-02, CLI-03, D-11: --input / --patients-dir 互斥)
     p_validate = sub.add_parser("validate", help="验证 RAG 结果质量与完整性")
-    p_validate.add_argument("--input", required=True, help="rag_results.json 路径")
+    g_val = p_validate.add_mutually_exclusive_group(required=True)
+    g_val.add_argument("--input", help="rag_results.json 路径（v3.0 兼容，deprecated）")
+    g_val.add_argument("--patients-dir", help="Output/patients/ 目录（v3.1 主路径）")
     p_validate.add_argument(
         "--patients", help="patients.json 路径（可选，用于完整性对比）"
     )
@@ -2340,16 +2566,18 @@ def main():
     p_index.add_argument("--kb-root", help="Knowledge base root directory")
     p_index.add_argument("--force", action="store_true", help="Force rebuild index")
 
-    # verify-batch
-    p_verify = sub.add_parser("verify-batch", help="验证批次执行证据的真实性")
+    # verify-batch (Phase 3: hidden)
+    p_verify = sub.add_parser("verify-batch", help=argparse.SUPPRESS)
     p_verify.add_argument("--input-dir", required=True, help="批次结果所在目录")
     p_verify.add_argument(
         "--kb-root", default=None, help="知识库根路径（可选，启用 snippet 校验）"
     )
 
-    # generate
+    # generate (CLI-02, CLI-03, D-11: --input / --patients-dir 互斥)
     p_gen = sub.add_parser("generate", help="从 RAG 结果生成 Markdown 报告")
-    p_gen.add_argument("--input", required=True, help="RAG 结果 JSON 路径")
+    g_gen = p_gen.add_mutually_exclusive_group(required=True)
+    g_gen.add_argument("--input", help="RAG 结果 JSON 路径（v3.0 兼容，deprecated）")
+    g_gen.add_argument("--patients-dir", help="Output/patients/ 目录（v3.1 主路径）")
     p_gen.add_argument("--output-dir", default="Output", help="输出目录")
     p_gen.add_argument(
         "--format",
@@ -2361,6 +2589,9 @@ def main():
     args = parser.parse_args()
     if args.command == "parse":
         cmd_parse(args)
+    elif args.command == "run":
+        from scripts.pipeline import run_pipeline
+        sys.exit(asyncio.run(run_pipeline(args)))
     elif args.command == "split":
         cmd_split(args)
     elif args.command == "orchestrate":

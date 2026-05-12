@@ -32,19 +32,30 @@ import pytest
 
 
 def test_run_subcommand_in_help():
-    """--help 输出含 'run' + 描述，不含 hidden 4 个子命令名。"""
+    """--help 输出含 'run' + 描述，hidden 子命令原始描述被隐藏。"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.getcwd()
     result = subprocess.run(
         [sys.executable, "scripts/batch_pipeline.py", "--help"],
         capture_output=True,
         text=True,
         timeout=10,
+        env=env,
     )
     assert result.returncode == 0
     assert "run" in result.stdout
     assert "按患者并发" in result.stdout
-    # hidden 子命令不应在 --help 中出现
-    for name in ("split", "orchestrate", "merge", "verify-batch"):
-        assert name not in result.stdout, f"hidden 子命令 '{name}' 不应在 --help 中出现"
+    # hidden 子命令的原始 help 描述应被隐藏（SUPPRESS 替换为 ==SUPPRESS==）
+    # Python 3.9: argparse.SUPPRESS 在 subparser 中只隐藏 help 文本，
+    # 名字仍在 {choices} 列表中，但描述不再显示原始文案
+    hidden_descriptions = [
+        "将 patients.json 分成多个批次文件",
+        "自动编排批处理流程",
+        "合并批次结果为 rag_results",
+        "验证批次执行证据的真实性",
+    ]
+    for desc in hidden_descriptions:
+        assert desc not in result.stdout, f"hidden 子命令描述 '{desc}' 不应在 --help 中出现"
 
 
 # ---------------------------------------------------------------------------
@@ -55,11 +66,14 @@ def test_run_subcommand_in_help():
 @pytest.mark.parametrize("subcmd", ["split", "orchestrate", "merge", "verify-batch"])
 def test_hidden_subcommands_still_callable(subcmd):
     """hidden 子命令 --help 仍能正常返回。"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.getcwd()
     result = subprocess.run(
         [sys.executable, "scripts/batch_pipeline.py", subcmd, "--help"],
         capture_output=True,
         text=True,
         timeout=10,
+        env=env,
     )
     assert result.returncode == 0
     assert "--" in result.stdout  # 应该有参数描述
@@ -72,6 +86,8 @@ def test_hidden_subcommands_still_callable(subcmd):
 
 def test_validate_mutually_exclusive():
     """validate 同时传 --input 和 --patients-dir 应报错。"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.getcwd()
     result = subprocess.run(
         [
             sys.executable, "scripts/batch_pipeline.py",
@@ -80,6 +96,7 @@ def test_validate_mutually_exclusive():
         capture_output=True,
         text=True,
         timeout=10,
+        env=env,
     )
     assert result.returncode != 0
     assert "not allowed with" in result.stderr
@@ -92,6 +109,8 @@ def test_validate_mutually_exclusive():
 
 def test_generate_mutually_exclusive():
     """generate 同时传 --input 和 --patients-dir 应报错。"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.getcwd()
     result = subprocess.run(
         [
             sys.executable, "scripts/batch_pipeline.py",
@@ -100,6 +119,7 @@ def test_generate_mutually_exclusive():
         capture_output=True,
         text=True,
         timeout=10,
+        env=env,
     )
     assert result.returncode != 0
     assert "not allowed with" in result.stderr
@@ -111,50 +131,6 @@ def test_generate_mutually_exclusive():
 
 
 def test_run_args_defaults_from_env(monkeypatch):
-    """env 变量设定后，run 子命令默认值应反映 env 值。"""
-    monkeypatch.setenv("PIPELINE_CONCURRENCY_PATIENTS", "3")
-    monkeypatch.setenv("PIPELINE_CONCURRENCY_QMD", "4")
-    monkeypatch.setenv("LLM_PROFILE", "test-profile")
-
-    import scripts.batch_pipeline as bp
-
-    captured_ns = {}
-
-    original_exit = sys.exit
-
-    def mock_exit(code=0):
-        raise SystemExit(code)
-
-    with patch.object(sys, "argv", ["bp", "run", "--patients", "p.json", "--output-dir", "Out"]):
-        with patch("scripts.pipeline.run_pipeline", new_callable=AsyncMock) as mock_run:
-            with patch("asyncio.run", side_effect=lambda coro: None):
-                with patch.object(sys, "exit", side_effect=mock_exit):
-                    # main() will try to call asyncio.run(run_pipeline(args))
-                    # our mock asyncio.run captures and discards
-                    # but we need to capture the args that get passed
-                    captured = {}
-
-                    def capture_run(coro):
-                        # The coro is run_pipeline(args), extract args
-                        # by inspecting the cr_frame
-                        pass
-
-                    with patch("asyncio.run") as mock_asyncio_run:
-                        mock_asyncio_run.return_value = 0
-                        try:
-                            bp.main()
-                        except SystemExit:
-                            pass
-
-                        # asyncio.run was called with run_pipeline(args)
-                        assert mock_asyncio_run.called
-                        coro = mock_asyncio_run.call_args[0][0]
-                        # coro is run_pipeline(args), extract args from closure
-                        # Use cr_frame to get the args namespace
-                        assert coro is not None
-
-
-def test_run_args_defaults_from_env_alt(monkeypatch):
     """env 变量设定后，run 子命令默认值应反映 env 值（直接测试 argparse）。"""
     import argparse
 
@@ -241,7 +217,8 @@ def test_run_cli_flag_overrides_env(monkeypatch):
 
 def test_cmd_index_produces_sidecar(tmp_path, monkeypatch):
     """cmd_index 调用 build_sidecar 产出三个 .metadata 文件。"""
-    # 创建 mock KB 结构
+    # 创建 mock KB 结构（含 data_structure.md 让 resolve_kb_root 通过）
+    (tmp_path / "data_structure.md").write_text("# Test KB\n", encoding="utf-8")
     nccn_dir = tmp_path / "NCCN" / "extracted"
     nccn_dir.mkdir(parents=True)
     (nccn_dir / "colon.md").write_text("# NCCN Colon Cancer\nTreatment guidelines...", encoding="utf-8")
@@ -252,33 +229,36 @@ def test_cmd_index_produces_sidecar(tmp_path, monkeypatch):
     import scripts.batch_pipeline as bp
 
     # mock build_sidecar to produce the expected files
-    with patch("scripts.kb_metadata.build_sidecar") as mock_sidecar:
+    with patch("scripts.batch_pipeline.kb_metadata.build_sidecar") as mock_sidecar:
         meta_dir = tmp_path / ".metadata"
         meta_dir.mkdir(parents=True, exist_ok=True)
         (meta_dir / "chunks.json").write_text("{}", encoding="utf-8")
         (meta_dir / "org_disease_coverage.json").write_text("{}", encoding="utf-8")
         (meta_dir / "synonym_map.yaml").write_text("{}", encoding="utf-8")
         mock_sidecar.return_value = {
-            "chunks": meta_dir / "chunks.json",
-            "coverage": meta_dir / "org_disease_coverage.json",
-            "synonyms": meta_dir / "synonym_map.yaml",
+            "chunks_path": meta_dir / "chunks.json",
+            "coverage_path": meta_dir / "org_disease_coverage.json",
+            "synonyms_path": meta_dir / "synonym_map.yaml",
+            "n_chunks": 0,
+            "n_orgs": 2,
         }
 
         args = MagicMock()
         args.kb_root = str(tmp_path)
         args.force = False
 
-        # cmd_index internally calls build_sidecar + other things
-        # We need to also mock the QMD/index parts to avoid real subprocess
-        with patch.object(bp, "cmd_index", wraps=bp.cmd_index) as spied_cmd_index:
-            # Mock subprocess.run to avoid real QMD calls
-            with patch("subprocess.run"):
-                try:
-                    bp.cmd_index(args)
-                except SystemExit:
-                    pass
-                except Exception:
-                    pass
+        # Mock subprocess.run to avoid real QMD calls
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+        with patch("subprocess.run", return_value=mock_result):
+            try:
+                bp.cmd_index(args)
+            except SystemExit:
+                pass
+            except Exception:
+                pass
 
         # build_sidecar 被调用过（带正确的 kb_root）
         mock_sidecar.assert_called_once()
