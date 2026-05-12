@@ -273,3 +273,160 @@ def _hit_org(hit: dict) -> str:
         if seg == "extracted" and i >= 1:
             return parts[i - 1].upper()
     return ""
+
+
+# ---------------------------------------------------------------------------
+# 编排层（Task 2）
+# ---------------------------------------------------------------------------
+
+# 模块顶部 import（避免每个 patient 重复 import 开销）
+from scripts.batch_pipeline import build_queries, extract_patient_features
+
+
+async def _run_one_patient(
+    patient: dict,
+    *,
+    qmd: AsyncQMDService,
+    llm: AsyncLLMClient,
+    output_dir: Path,
+    pat_sem: asyncio.Semaphore,
+    synonym_map: dict,
+    chunks_meta: dict,
+    coverage: dict,
+) -> None:
+    """单患者子流水线：6 stages 串行（D-02）。
+
+    异常分级（D-05）：
+    - LLMFailure → _write_failed
+    - KeyError/ValueError → _write_failed (stage="build")
+    - asyncio.CancelledError → raise（透传，不写 shard）
+    - 无 except Exception 通配（WR-08）
+    """
+    async with pat_sem:  # D-04: patient-level 限流
+        pid = patient.get("patient_id", "unknown")
+        pname = patient.get("patient_name", "?")
+        t_start = time.monotonic()
+        try:
+            # Stage 1: 特征提取（纯函数，从 batch_pipeline 复用）
+            features = extract_patient_features(patient)
+            queries = build_queries(patient, features)
+
+            # Stage 2: 病种归一化（Phase 1 函数）
+            canonical = normalize_disease(patient.get("disease_type"), synonym_map)
+
+            # Stage 3: QMD 并发查询（Phase 1 D-03 sem 自动生效）
+            hits_per_query = await asyncio.gather(
+                *[qmd.query(q) for q in queries]
+            )
+            hits = _dedupe_hits([h for sub in hits_per_query for h in sub])
+
+            # Stage 4: 双层过滤（Phase 1 D-10）
+            allowed_orgs = filter_orgs_by_disease(coverage, canonical)
+            hits = [h for h in hits if _hit_org(h) in allowed_orgs]
+            hits = filter_chunks_by_disease(hits, chunks_meta, canonical)
+
+            # Stage 5: 构造 prompt（D-14）
+            messages = build_patient_prompt(patient, hits)
+
+            # Stage 6: LLM 调用（含 feedback 重试一次）
+            result, score, status = await llm.complete_structured_with_feedback(
+                messages,
+                PATIENT_RECOMMENDATION_SCHEMA,
+                feedback_check=compute_citation_coverage,
+                threshold=0.5,
+                patient_id=pid,
+            )
+
+            wall = time.monotonic() - t_start
+            shard = {
+                "patient_id": pid,
+                "status": status,  # "ok" or "partial"
+                "citation_coverage": score,
+                "wall_time_s": round(wall, 2),
+                "result": result,
+            }
+            _atomic_write_json(output_dir / "patients" / f"{pid}.json", shard)
+            print(
+                f"[{pid}] {pname} ... {status.upper()} ({wall:.1f}s, coverage={score:.2f})",
+                flush=True,
+            )
+
+        except LLMFailure as e:
+            _write_failed(output_dir, pid, str(e.last_error), e.stage, last_llm_output=None)
+            print(f"[{pid}] {pname} ... FAIL ({e.stage}: {e.last_error})", flush=True)
+        except (KeyError, ValueError) as e:
+            _write_failed(output_dir, pid, str(e), stage="build", last_llm_output=None)
+            print(f"[{pid}] {pname} ... FAIL (build: {e})", flush=True)
+        except asyncio.CancelledError:
+            raise  # D-05: CancelledError 必须向上传播，不写 shard
+
+
+async def run_pipeline(args: argparse.Namespace) -> int:
+    """顶层编排器（PIP-01 + PIP-06）。
+
+    返回退出码：0=全部成功（含 partial），1=有 failure。
+    """
+    profile = LLMProfile.from_env(name=args.llm_profile)
+    patients = _load_patients(args.patients)
+    output_dir = Path(args.output_dir).resolve()
+    (output_dir / "patients").mkdir(parents=True, exist_ok=True)
+    (output_dir / "_failed").mkdir(parents=True, exist_ok=True)
+
+    # Resume 扫描（D-08）
+    to_run = _scan_resume(patients, output_dir, resume=args.resume)
+
+    kb_root = Path(args.kb_root or os.environ.get("MEDICAL_GUIDELINES_DIR", "."))
+    synonym_map = load_synonym_map(kb_root)
+    chunks_meta, coverage = _load_kb_metadata(kb_root)
+
+    wall_start = time.monotonic()
+
+    # D-03: 顶层共享 httpx.AsyncClient —— QMD + LLM 共连接池
+    # D-04: 三 sem 互不嵌套
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(profile.timeout_s)
+        ) as http:
+            qmd_sem = asyncio.Semaphore(args.concurrency_qmd)
+            pat_sem = asyncio.Semaphore(args.concurrency_patients)
+            async with AsyncQMDService(
+                http_client=http,
+                semaphore=qmd_sem,
+            ) as qmd:
+                llm = AsyncLLMClient(
+                    profile,
+                    http=http,
+                    semaphore=asyncio.Semaphore(profile.concurrency),
+                )
+
+                await asyncio.gather(
+                    *[
+                        _run_one_patient(
+                            p,
+                            qmd=qmd,
+                            llm=llm,
+                            output_dir=output_dir,
+                            pat_sem=pat_sem,
+                            synonym_map=synonym_map,
+                            chunks_meta=chunks_meta,
+                            coverage=coverage,
+                        )
+                        for p in to_run
+                    ],
+                    return_exceptions=True,  # D-01: 单 patient 失败不击垮 gather
+                )
+    finally:
+        # D-07: Ctrl-C 也要尽力写 rag_results.json
+        wall = time.monotonic() - wall_start
+        aggregate = _merge_rag_results(output_dir, wall)
+        _atomic_write_json(output_dir / "rag_results.json", aggregate)
+
+    # D-06: 退出码
+    exit_code = 0 if aggregate["summary"]["failed"] == 0 else 1
+    s = aggregate["summary"]
+    print(
+        f"Total: {s['total']}  OK: {s['ok']}  Partial: {s['partial']}  "
+        f"Failed: {s['failed']}  Wall: {s['wall_time_s']:.1f}s  Exit: {exit_code}",
+        flush=True,
+    )
+    return exit_code
