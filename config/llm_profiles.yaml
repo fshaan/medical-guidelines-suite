@@ -1,0 +1,19 @@
+# Medical Guidelines Suite — LLM Profiles
+# 入仓策略：仅元数据（base_url / model / timeout 等），不含 secret。
+# `api_key_env` 指向 env 变量名；运维侧通过 LLM_BASE_URL 覆盖 `10.0.x.x` 占位符。
+
+profiles:
+  qwen3-vllm-lan:
+    base_url: http://10.0.x.x:8000/v1
+    model: Qwen3.5-35B-A3B
+    api_key_env: LLM_API_KEY
+    timeout_s: 180
+    structured_mode: json_schema
+    concurrency: 5
+  deepseek-cloud:
+    base_url: https://api.deepseek.com/v1
+    model: deepseek-chat
+    api_key_env: DEEPSEEK_API_KEY
+    timeout_s: 60
+    structured_mode: json_object
+    concurrency: 10
