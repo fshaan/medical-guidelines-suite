@@ -40,7 +40,7 @@ progress:
 
 ### Decisions (from PROJECT.md Key Decisions)
 
-- LLM 推理栈：vLLM + Qwen3.5-35B-A3B（内网共享 LAN）
+- LLM 推理栈：vLLM + Qwen3.6-35B-A3B-NVFP4（served-model-name `qwen3.6-35b`，内网共享 LAN，2026-07-02 spark 实地核验）
 - 并发预算：LLM 5 路 / QMD 8 路 / patients 5 路
 - `evidence_level` 完全枚举（strict）以根除引号转义 bug
 - per-patient shard 为 canonical，`rag_results.json` 退为派生

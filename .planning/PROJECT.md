@@ -10,7 +10,7 @@
 
 **Target features:**
 - 异步 QMD 检索（串行 3min → 并发 30-60s）
-- 内网 vLLM + Qwen3.5-35B-A3B 替代人工 LLM（50min → 3-5min）
+- 内网 vLLM + Qwen3.6-35B-A3B-NVFP4 替代人工 LLM（50min → 3-5min）
 - JSON Schema strict 输出（消除引号转义 bug）
 - 病种侧车元数据 + 双层过滤（消除结直肠癌引用胃癌 chunk）
 - per-patient shard 输出 + 部分容错 + `--resume`
@@ -40,7 +40,7 @@
 
 <!-- v3.1 async-pipeline milestone 目标。来源：docs/refactor_plan_2026-05-11.md grill-me 13 轮闭环。 -->
 
-- [ ] **异步 LLM 调用流水线**：用 vLLM/Qwen3.5-35B-A3B + httpx.AsyncClient 替代当前的人工"复制 prompt → 粘贴 JSON"
+- [ ] **异步 LLM 调用流水线**：用 vLLM/Qwen3.6-35B-A3B-NVFP4 + httpx.AsyncClient 替代当前的人工"复制 prompt → 粘贴 JSON"
 - [ ] **QMD 异步检索**：39 次查询从串行 ~3min 降到并发 ~30-60s
 - [ ] **JSON Schema strict 输出**：服务端拒绝 schema 违反，消除引号转义 bug
 - [ ] **病种侧车元数据 + 双层过滤**：synonym_map.yaml + chunks.json，解决结直肠癌引用胃癌 chunk 的错配
@@ -79,7 +79,7 @@
 ## Constraints
 
 - **Tech stack**: Python 3.9+ + asyncio — 异步重构基础，与现有 retriever.py/batch_pipeline.py 接口对齐
-- **LLM 推理**: 内网 vLLM + Qwen3.5-35B-A3B — 共享服务器，LAN 延迟 1-3s，timeout 180s，并发 5 路（留 50% 余量）
+- **LLM 推理**: 内网 vLLM + Qwen3.6-35B-A3B-NVFP4（served-model-name `qwen3.6-35b`） — 共享服务器，LAN 延迟 1-3s，timeout 180s，并发 5 路（留 50% 余量）
 - **QMD 并发**: 全局 Semaphore(8) — QMD 是 MCP HTTP 服务，会话粘性需保持
 - **Output 语言**: 简体中文 HARD CONSTRAINT — `CLAUDE.md` 显式声明
 - **数据隐私**: 患者 PHI 不入 git，Input/ 已 gitignore — 病种归一化在本机完成，词表可入仓
@@ -90,7 +90,7 @@
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| LLM 推理栈选 vLLM + Qwen3.5-35B-A3B | 内网部署、json_schema strict 原生支持、A3B MoE 激活 3B 中文够用 | — Pending（Phase 2 验证质量） |
+| LLM 推理栈选 vLLM + Qwen3.6-35B-A3B-NVFP4 | 内网部署、json_schema strict 原生支持、A3B MoE 激活 3B 中文够用 | — Pending（Phase 2 验证质量） |
 | 部署拓扑选内网共享 LAN/VPN | 数据不出网，timeout 180s 容忍同事任务争抢 | — Pending |
 | LLM 并发预算 5 路 | 共享服务器谨慎默认，留 50% 余量 | — Pending |
 | `evidence_level` 完全枚举 strict | 服务端 sampling 拒绝违反，根除引号 bug | — Pending |
