@@ -2,7 +2,7 @@
 
 Clinical guidelines knowledge base builder, retrieval engine, and batch patient report generator.
 
-> **Active milestone — v3.1 async-pipeline (Phase 1–3 complete, E2E retrieval verified, live LLM run pending network)**: 端到端从 ~60min 降到 <10min。Phase 1（async retriever + KB sidecar）、Phase 2（vLLM client + strict schema）、Phase 3（async pipeline + `run` subcommand）全部落地，**302 tests passing**。2026-07-02 完成 Phase 3 E2E 验收后的多层检索 bug 修复（3 轮 codex 对抗式审查，8 个 bug：org/chunk 过滤大小写与路径不匹配、异常静默吞掉、QMD session 级并发卡死、CJK 打标、零证据幻觉拦截、max_tokens 截断），离线真实检索 E2E 10/10 患者跑通、病种隔离正确；唯一剩余是真实 vLLM 推理这一步（需 spark 内网，待网络恢复后一条命令收尾）。Source of truth: [`docs/refactor_plan_2026-05-11.md`](docs/refactor_plan_2026-05-11.md)。规划文档：[`.planning/`](.planning/)。
+> **Active milestone — v3.1 async-pipeline (Phase 1–3 complete, E2E verified 10/10)**: 端到端从 ~60min 降到 **205.9s**（降 94%）。Phase 1（async retriever + KB sidecar）、Phase 2（vLLM client + schema）、Phase 3（async pipeline + `run` subcommand）全部落地并通过真实 E2E 验收（2026-07-03：10 例真实案例 10/10 成功，wall 205.9s，QG-01..05 全 PASS），**319 tests passing**。关键突破：决定性对比测试定位 max_tokens 超时三层根因（hits 过载诱发退化 / vLLM strict 模式 string 字段写不停 / json_object 丢失 enum 强制）+ codex 对抗审查 → 退化感知三档降级链 + json_object 主路径 + evidence_level 应用层归一化。Phase 4（删除 batch 概念）待 stabilize 一周后启动。Source of truth: [`docs/refactor_plan_2026-05-11.md`](docs/refactor_plan_2026-05-11.md)。规划文档：[`.planning/`](.planning/)。案例报告：[`docs/case_report_2026-07-03/`](docs/case_report_2026-07-03/)。
 
 ## Installation
 
@@ -71,7 +71,8 @@ python3 scripts/batch_pipeline.py run \
   --patients Output/patients.json \
   --output-dir Output/ \
   --llm-profile qwen3-vllm-lan \
-  --concurrency-patients 5
+  --concurrency-patients 2 \
+  --concurrency-qmd 8
 
 # Validate per-patient results
 python3 scripts/batch_pipeline.py validate --patients-dir Output/patients/
@@ -110,16 +111,17 @@ medical-guidelines-suite/
 │   └── data_structure_org.md   # Organization index template
 ├── scripts/
 │   ├── retriever.py            # QMD service wrapper (sync + async, BM25 + vector + reranking)
-│   ├── llm_client.py           # AsyncLLMClient + PATIENT_RECOMMENDATION_SCHEMA + retry strategies
-│   ├── pipeline.py             # Async per-patient pipeline orchestrator (run_pipeline + 12 helpers)
+│   ├── llm_client.py           # AsyncLLMClient + schema + 退化检测(DegenerationError) + evidence_level 归一化 + 三类重试
+│   ├── pipeline.py             # Async per-patient orchestrator (run_pipeline + 退化感知三档降级链 + helpers)
 │   ├── kb_metadata.py          # KB disease metadata + synonym map + dual-layer filtering
 │   ├── extract_all.py          # Legacy batch extraction (Docling → extracted/*.md)
 │   ├── extract_guidelines.py   # v2 extraction pipeline (MinerU + Docling + VLM)
 │   ├── extraction/             # Extraction modules (pdf/docx/postprocess/vlm_describer)
+│   ├── dev/                    # 开发期验证脚本（max_tokens_probe 决定性测试 / e2e_real_retrieval / build_new_patients / gen_report）
 │   └── batch_pipeline.py       # CLI entry point (parse/run/validate/generate/index + 4 hidden legacy)
 ├── config/
 │   └── llm_profiles.yaml       # LLM profile definitions (qwen3-vllm-lan, deepseek-cloud)
-├── tests/                      # pytest test suite (289 tests)
+├── tests/                      # pytest test suite (319 tests, 含退化/归一化/E2E smoke 回归)
 ├── docs/
 │   ├── refactor_plan_2026-05-11.md  # v3.1 async-pipeline source of truth (grill-me 13-round)
 │   ├── phase3_e2e_acceptance.md     # Phase 3 E2E verification checklist + sign-off template
