@@ -27,6 +27,7 @@ _ENV_API_KEY_ENV = "LLM_API_KEY_ENV"
 _ENV_TIMEOUT = "LLM_TIMEOUT"
 _ENV_STRUCTURED_MODE = "LLM_STRUCTURED_MODE"
 _ENV_CONCURRENCY = "LLM_CONCURRENCY"
+_ENV_MAX_TOKENS = "LLM_MAX_TOKENS"
 
 _DEFAULT_PROFILE_NAME = "qwen3-vllm-lan"
 _DEFAULT_YAML_PATH = Path(__file__).resolve().parent.parent / "config" / "llm_profiles.yaml"
@@ -144,6 +145,8 @@ class LLMProfile:
             )
         if self.timeout_s < 1:
             raise ValueError(f"timeout_s must be >= 1, got {self.timeout_s}")
+        if self.max_tokens < 1:
+            raise ValueError(f"max_tokens must be >= 1, got {self.max_tokens}")
 
     @classmethod
     def from_env(
@@ -179,6 +182,7 @@ class LLMProfile:
         structured_mode = _pick_str(_ENV_STRUCTURED_MODE, "structured_mode", default="json_schema")
         timeout_s = _pick_int(_ENV_TIMEOUT, "timeout_s", default=180)
         concurrency = _pick_int(_ENV_CONCURRENCY, "concurrency", default=5)
+        max_tokens = _pick_int(_ENV_MAX_TOKENS, "max_tokens", default=65536)
 
         if base_url is None:
             raise ValueError(
@@ -199,6 +203,7 @@ class LLMProfile:
             timeout_s=timeout_s,
             structured_mode=structured_mode,
             concurrency=concurrency,
+            max_tokens=max_tokens,
         )
 
 

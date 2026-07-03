@@ -17,6 +17,7 @@ from scripts.llm_client import (
 _ALL_LLM_ENV = [
     "LLM_PROFILE", "LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY_ENV",
     "LLM_TIMEOUT", "LLM_STRUCTURED_MODE", "LLM_CONCURRENCY", "LLM_API_KEY",
+    "LLM_MAX_TOKENS",
 ]
 
 
@@ -38,6 +39,7 @@ def yaml_with_two_profiles(tmp_path):
         "    timeout_s: 120\n"
         "    structured_mode: json_schema\n"
         "    concurrency: 3\n"
+        "    max_tokens: 8192\n"
         "  partial:\n"
         "    base_url: http://partial/v1\n"
         "    model: partial-model\n",
@@ -54,6 +56,7 @@ def test_llm_profile_from_env_all_set(monkeypatch, tmp_path):
     monkeypatch.setenv("LLM_TIMEOUT", "300")
     monkeypatch.setenv("LLM_STRUCTURED_MODE", "json_object")
     monkeypatch.setenv("LLM_CONCURRENCY", "20")
+    monkeypatch.setenv("LLM_MAX_TOKENS", "24576")
     p = LLMProfile.from_env(yaml_path=tmp_path / "nope.yaml")
     assert p.name == "custom"
     assert p.base_url == "http://env-host/v1"
@@ -62,14 +65,17 @@ def test_llm_profile_from_env_all_set(monkeypatch, tmp_path):
     assert p.timeout_s == 300
     assert p.structured_mode == "json_object"
     assert p.concurrency == 20
+    assert p.max_tokens == 24576
 
 
 def test_llm_profile_env_overrides_yaml(monkeypatch, yaml_with_two_profiles):
     monkeypatch.setenv("LLM_PROFILE", "qwen3-vllm-lan")
     monkeypatch.setenv("LLM_BASE_URL", "http://env-wins/v1")
+    monkeypatch.setenv("LLM_MAX_TOKENS", "32768")
     p = LLMProfile.from_env(yaml_path=yaml_with_two_profiles)
     assert p.base_url == "http://env-wins/v1"
     assert p.model == "yaml-model"
+    assert p.max_tokens == 32768  # env 覆盖 yaml 的 8192
 
 
 def test_llm_profile_from_env_partial_falls_back_to_yaml(monkeypatch, yaml_with_two_profiles):
@@ -82,6 +88,7 @@ def test_llm_profile_from_env_partial_falls_back_to_yaml(monkeypatch, yaml_with_
     assert p.timeout_s == 120
     assert p.structured_mode == "json_schema"
     assert p.concurrency == 3
+    assert p.max_tokens == 8192
 
 
 def test_llm_profile_yaml_falls_back_to_default(monkeypatch, yaml_with_two_profiles):
@@ -92,6 +99,7 @@ def test_llm_profile_yaml_falls_back_to_default(monkeypatch, yaml_with_two_profi
     assert p.api_key_env == "LLM_API_KEY"
     assert p.structured_mode == "json_schema"
     assert p.base_url == "http://partial/v1"
+    assert p.max_tokens == 65536  # yaml 无该字段，回退 dataclass 默认
 
 
 def test_load_profiles_yaml_missing_returns_empty(tmp_path):
@@ -136,6 +144,18 @@ def test_llm_concurrency_zero_rejected_by_post_init():
 def test_llm_timeout_zero_rejected_by_post_init():
     with pytest.raises(ValueError, match="timeout_s must be >= 1"):
         LLMProfile(name="t", base_url="http://x/v1", model="m", timeout_s=0)
+
+
+def test_llm_max_tokens_invalid_raises(monkeypatch, yaml_with_two_profiles):
+    monkeypatch.setenv("LLM_PROFILE", "qwen3-vllm-lan")
+    monkeypatch.setenv("LLM_MAX_TOKENS", "not-an-int")
+    with pytest.raises(ValueError):
+        LLMProfile.from_env(yaml_path=yaml_with_two_profiles)
+
+
+def test_llm_max_tokens_zero_rejected_by_post_init():
+    with pytest.raises(ValueError, match="max_tokens must be >= 1"):
+        LLMProfile(name="t", base_url="http://x/v1", model="m", max_tokens=0)
 
 
 def test_llm_profile_required_field_missing(monkeypatch, tmp_path):
