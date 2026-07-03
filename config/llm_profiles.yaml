@@ -8,10 +8,10 @@ profiles:
     base_url: http://192.168.31.92:8000/v1
     model: qwen3.6-35b  # served-model-name；实际权重 /models/nvidia/Qwen3.6-35B-A3B-NVFP4（spark 主机验证于 2026-07-02）
     api_key_env: LLM_API_KEY
-    timeout_s: 180
+    timeout_s: 90  # 8192 退化 ~68s，90s 留余量；正常 ~11s（2026-07-03 决定性测试）
     structured_mode: json_schema
     concurrency: 5
-    max_tokens: 65536  # 阶段2对比测试后定甜点值；可经 LLM_MAX_TOKENS env 临时覆盖
+    max_tokens: 8192  # 正常输出 ~1000 token 有 8x 余量；退化 68s 可控交由三档降级
   deepseek-cloud:
     base_url: https://api.deepseek.com/v1
     model: deepseek-chat

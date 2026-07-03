@@ -53,6 +53,38 @@ class SchemaError(Exception):
         self.patient_id = patient_id
 
 
+class DegenerationError(Exception):
+    """LLM 输出退化（重复生成 / 撞 max_tokens 上限）。
+
+    2026-07-03（codex 审查采纳）：决定性对比测试证明 finish_reason=length +
+    高重复度几乎总是模型陷入重复循环撞 max_tokens 上限，不是真实输出被截断。
+    正常输出 finish=stop（约 1000 token）。携带诊断字段供 pipeline 层换策略
+    重试或写 _failed/stage=degeneration，不伪装成 partial（QG-02 诚实）。
+    """
+
+    def __init__(self, patient_id, finish_reason, completion_tokens, repetition, content_preview):
+        self.patient_id = patient_id
+        self.finish_reason = finish_reason
+        self.completion_tokens = completion_tokens
+        self.repetition = repetition
+        self.content_preview = content_preview
+        super().__init__(
+            f"degeneration: finish={finish_reason} comp_tok={completion_tokens} "
+            f"rep={repetition:.2f} (preview: {content_preview!r})"
+        )
+
+
+def _repetition_score(text: str) -> float:
+    """0=无重复，1=高度重复。按 200 字符分块，1 - unique/total。"""
+    if len(text) < 400:
+        return 0.0
+    chunk = 200
+    chunks = [text[i : i + chunk] for i in range(0, len(text), chunk)]
+    if len(chunks) < 2:
+        return 0.0
+    return 1.0 - len(set(chunks)) / len(chunks)
+
+
 _EVIDENCE_LEVEL_ENUM: list[str] = [
     # CSCO（8）
     "1A类", "1B类", "2A类", "2B类", "3类",
@@ -124,15 +156,14 @@ class LLMProfile:
     base_url: str
     model: str
     api_key_env: str = "LLM_API_KEY"
-    # 2026-07-02：曾经改成 8192（当时的估算"5 org 全命中 ≈1500-3500 token"），
-    # 真实 E2E 验收（10/10 患者）证明这个估算严重偏低——truncation 全部发生在
-    # 24309-24461 字符处，且都还卡在 guideline_results 的第一条里（还没到第二
-    # 条），说明单条指南的推荐理由本身就能逼近 8192 token 上限。真实响应可能
-    # 覆盖 CSCO/NCCN/ESMO/JGCA/CACA 最多 5 个机构，单条已经吃满预算，多条必然
-    # 撑爆。改回 65536（这是本次修复前的原值，此前无截断报告，属于有实际使用
-    # 支撑的经验值，不是随手设的占位符）。max_tokens 只是生成上限，不会强迫模
-    # 型生成更长文本，调高的代价远小于截断导致 JSON 全部非法的代价。
-    max_tokens: int = 65536
+    # 2026-07-03 决定性对比测试（codex 审查）纠正了 2026-07-02 的判断：当时认为
+    # "8192 截断在 24309-24461 字符处 → 调回 65536"，但实测证明那些 length 全是
+    # 退化（comp_tok 撞满 max_tokens + repetition 0.89-0.97），不是真截断。真实
+    # 规律：退化随机触发，max_tokens 不决定是否退化，只决定退化时烧多久（vLLM
+    # ~120 tok/s：8192→68s 快速失败，65536→546s ReadTimeout）。正常输出 finish=stop
+    # ~1000 token。8192 给 8x 余量，退化时 68s 交由 _llm_with_degeneration_fallback
+    # 三档降级处理，而非 65536 几百秒拖垮整批。可经 LLM_MAX_TOKENS env / yaml 覆盖。
+    max_tokens: int = 8192
     temperature: float = 0.1
     timeout_s: int = 180
     structured_mode: str = "json_schema"
@@ -182,7 +213,7 @@ class LLMProfile:
         structured_mode = _pick_str(_ENV_STRUCTURED_MODE, "structured_mode", default="json_schema")
         timeout_s = _pick_int(_ENV_TIMEOUT, "timeout_s", default=180)
         concurrency = _pick_int(_ENV_CONCURRENCY, "concurrency", default=5)
-        max_tokens = _pick_int(_ENV_MAX_TOKENS, "max_tokens", default=65536)
+        max_tokens = _pick_int(_ENV_MAX_TOKENS, "max_tokens", default=8192)
 
         if base_url is None:
             raise ValueError(
@@ -246,14 +277,25 @@ class AsyncLLMClient:
             headers["Authorization"] = f"Bearer {api_key}"
         return headers
 
-    def _build_payload(self, messages, schema, schema_name):
+    def _build_payload(
+        self, messages, schema, schema_name,
+        *,
+        max_tokens_override: Optional[int] = None,
+        frequency_penalty: Optional[float] = None,
+        structured_mode_override: Optional[str] = None,
+    ):
         payload = {
             "model": self.profile.model,
             "messages": messages,
             "temperature": self.profile.temperature,
-            "max_tokens": self.profile.max_tokens,
+            "max_tokens": max_tokens_override
+            if max_tokens_override is not None
+            else self.profile.max_tokens,
         }
-        if self.profile.structured_mode == "json_schema":
+        if frequency_penalty is not None:
+            payload["frequency_penalty"] = frequency_penalty
+        mode = structured_mode_override or self.profile.structured_mode
+        if mode == "json_schema":
             payload["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
@@ -271,6 +313,18 @@ class AsyncLLMClient:
             content = response_json["choices"][0]["message"]["content"]
             parsed = json.loads(content)
             jsonschema.validate(parsed, schema)
+            # 退化检测（2026-07-03 codex 审查）：finish=length 几乎总是模型
+            # 重复生成撞 max_tokens 上限（正常输出 finish=stop）。即便 JSON
+            # 恰好合法，length + 高重复度也应判失败，不放过退化输出。
+            choice = response_json["choices"][0]
+            finish_reason = choice.get("finish_reason")
+            if finish_reason == "length":
+                comp_tok = response_json.get("usage", {}).get("completion_tokens")
+                rep = _repetition_score(content)
+                if rep >= 0.5:
+                    raise DegenerationError(
+                        patient_id, finish_reason, comp_tok, rep, content[:200]
+                    )
             return parsed
         except (KeyError, IndexError, TypeError) as e:
             raise SchemaError(f"malformed response: {e}", patient_id) from e
@@ -298,8 +352,19 @@ class AsyncLLMClient:
         except jsonschema.ValidationError as e:
             raise SchemaError(f"schema violation: {e.message}", patient_id) from e
 
-    async def _post_with_retry(self, messages, schema, schema_name, patient_id):
-        payload = self._build_payload(messages, schema, schema_name)
+    async def _post_with_retry(
+        self, messages, schema, schema_name, patient_id,
+        *,
+        max_tokens_override: Optional[int] = None,
+        frequency_penalty: Optional[float] = None,
+        structured_mode_override: Optional[str] = None,
+    ):
+        payload = self._build_payload(
+            messages, schema, schema_name,
+            max_tokens_override=max_tokens_override,
+            frequency_penalty=frequency_penalty,
+            structured_mode_override=structured_mode_override,
+        )
         url = f"{self.profile.base_url.rstrip('/')}/chat/completions"
         last_error: Optional[Exception] = None
         for attempt in range(4):
@@ -342,16 +407,24 @@ class AsyncLLMClient:
         *,
         schema_name: str = "patient_recommendation",
         patient_id: Optional[str] = None,
+        max_tokens_override: Optional[int] = None,
+        frequency_penalty: Optional[float] = None,
+        structured_mode_override: Optional[str] = None,
     ) -> dict:
         async with self._sem:
+            kw = dict(
+                max_tokens_override=max_tokens_override,
+                frequency_penalty=frequency_penalty,
+                structured_mode_override=structured_mode_override,
+            )
             try:
                 return await self._post_with_retry(
-                    messages, schema, schema_name, patient_id,
+                    messages, schema, schema_name, patient_id, **kw,
                 )
             except SchemaError:
                 try:
                     return await self._post_with_retry(
-                        messages, schema, schema_name, patient_id,
+                        messages, schema, schema_name, patient_id, **kw,
                     )
                 except SchemaError as e2:
                     raise LLMFailure(patient_id, e2, stage="schema") from e2
@@ -366,9 +439,17 @@ class AsyncLLMClient:
         threshold: float = 0.5,
         feedback_template: Optional[str] = None,
         patient_id: Optional[str] = None,
+        max_tokens_override: Optional[int] = None,
+        frequency_penalty: Optional[float] = None,
+        structured_mode_override: Optional[str] = None,
     ) -> tuple[dict, float, str]:
+        kw = dict(
+            max_tokens_override=max_tokens_override,
+            frequency_penalty=frequency_penalty,
+            structured_mode_override=structured_mode_override,
+        )
         result = await self.complete_structured(
-            messages, schema, schema_name=schema_name, patient_id=patient_id,
+            messages, schema, schema_name=schema_name, patient_id=patient_id, **kw,
         )
         score = feedback_check(result)
         if score >= threshold:
@@ -380,7 +461,7 @@ class AsyncLLMClient:
             {"role": "user", "content": feedback_msg},
         ]
         result2 = await self.complete_structured(
-            augmented, schema, schema_name=schema_name, patient_id=patient_id,
+            augmented, schema, schema_name=schema_name, patient_id=patient_id, **kw,
         )
         score2 = feedback_check(result2)
         status = "ok" if score2 >= threshold else "partial"

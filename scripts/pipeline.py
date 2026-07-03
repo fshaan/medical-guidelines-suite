@@ -33,6 +33,7 @@ from scripts.kb_metadata import (
 )
 from scripts.llm_client import (
     AsyncLLMClient,
+    DegenerationError,
     LLMFailure,
     LLMProfile,
     PATIENT_RECOMMENDATION_SCHEMA,
@@ -105,6 +106,7 @@ def build_patient_prompt(patient: dict, retrieval_hits: List[dict]) -> List[dict
         "- 每条 guideline_results 至少引用 2 个 retrieval_sources 编号 [n]\n"
         "- evidence_level 必须落在 schema enum 内\n"
         "- consensus / differences 各列出 2-4 条\n"
+        "- 每条推荐一次性写完，禁止重复同一内容或循环生成\n"
         "- 全部 user-facing 文本使用简体中文"
     )
     user_parts: List[str] = []
@@ -302,12 +304,78 @@ def _hit_org(hit: dict) -> str:
     return ""
 
 
+def _select_diverse_hits(
+    hits: List[dict], per_org: int = 3, max_total: int = 15
+) -> List[dict]:
+    """按组织保底选取 hits，控制喂给 LLM 的上下文规模。
+
+    2026-07-03（codex 审查采纳）：真实 E2E 里单患者过滤后常剩 ~27 hits，全文
+    拼进 prompt（11000+ 字）信息过载，是 vLLM/Qwen3.6 结构化输出退化（重复生
+    成到 max_tokens 上限）的诱因之一。按 _hit_org 分组、每 org 取 score top-K
+    保底，保证 5 个指南组织都有代表（前提是该 org 有命中），再合并按 score 截
+    断到 max_total。这样既控总量又避免高分 CSCO/NCCN 挤掉 ESMO/JGCA/CACA。
+    """
+    if len(hits) <= max_total:
+        return hits
+    by_org: Dict[str, List[dict]] = {}
+    for h in hits:
+        by_org.setdefault(_hit_org(h).lower(), []).append(h)
+    picked: List[dict] = []
+    for org_hits in by_org.values():
+        org_hits.sort(key=lambda h: h.get("score", 0.0), reverse=True)
+        picked.extend(org_hits[:per_org])
+    picked.sort(key=lambda h: h.get("score", 0.0), reverse=True)
+    return picked[:max_total]
+
+
 # ---------------------------------------------------------------------------
 # 编排层（Task 2）
 # ---------------------------------------------------------------------------
 
 # 模块顶部 import（避免每个 patient 重复 import 开销）
 from scripts.batch_pipeline import build_queries, extract_patient_features
+
+
+async def _llm_with_degeneration_fallback(
+    llm: AsyncLLMClient, patient: dict, hits: List[dict], pid: str,
+) -> tuple[dict, float, str, dict]:
+    """三档退化感知降级链（2026-07-03 codex 审查采纳）。
+
+    决定性对比测试证明退化随机触发、max_tokens 不决定是否退化；胃癌 5/5 稳定
+    退化说明盲重试是抽奖——必须逐档换策略。三档：
+      档1 strict json_schema + 完整 hits（已 _select_diverse_hits 精简到 ≤15）
+      档2 strict + 进一步精简 hits(per_org=2) + frequency_penalty=0.3
+      档3 json_object 降级（应用层 jsonschema.validate）+ 精简 hits + penalty
+    任一档成功即返回 (result, score, status, attempt_meta)；三档全退化抛
+    DegenerationError 让上层写 _failed/stage=degeneration。LLMFailure(transport)
+    不在此捕获——网络错误换策略无意义，直接穿透到 _run_one_patient 的 except。
+    """
+    schema = PATIENT_RECOMMENDATION_SCHEMA
+    fb_kw = dict(feedback_check=compute_citation_coverage, threshold=0.5, patient_id=pid)
+    # 档1: strict + 完整精简 hits
+    try:
+        r, s, st = await llm.complete_structured_with_feedback(
+            build_patient_prompt(patient, hits), schema, **fb_kw,
+        )
+        return r, s, st, {"attempt": 1, "mode": "strict", "hits": len(hits), "penalty": 0.0}
+    except DegenerationError:
+        pass
+    # 档2: 精简 hits + frequency_penalty 抑制重复
+    hits2 = _select_diverse_hits(hits, per_org=2, max_total=8)
+    try:
+        r, s, st = await llm.complete_structured_with_feedback(
+            build_patient_prompt(patient, hits2), schema,
+            frequency_penalty=0.3, **fb_kw,
+        )
+        return r, s, st, {"attempt": 2, "mode": "strict", "hits": len(hits2), "penalty": 0.3}
+    except DegenerationError:
+        pass
+    # 档3: strict→json_object 降级（应用层 jsonschema.validate 兜底）
+    r, s, st = await llm.complete_structured_with_feedback(
+        build_patient_prompt(patient, hits2), schema,
+        frequency_penalty=0.3, structured_mode_override="json_object", **fb_kw,
+    )
+    return r, s, st, {"attempt": 3, "mode": "json_object", "hits": len(hits2), "penalty": 0.3}
 
 
 async def _run_one_patient(
@@ -382,6 +450,10 @@ async def _run_one_patient(
             hits = [h for h in hits if _hit_org(h).lower() in allowed_orgs]
             hits = filter_chunks_by_disease(hits, chunks_meta, canonical)
 
+            # 2026-07-03（codex 审查）：按 org 保底精简，控制喂给 LLM 的上下文
+            # 规模，降低结构化输出退化触发（见 _select_diverse_hits）。
+            hits = _select_diverse_hits(hits)
+
             # 2026-07-02 修复（codex 对抗式审查 P0）：零检索证据不能静默喂给
             # LLM。此前即使 hits=[]，Stage 5/6 依然照常执行——LLM 在没有任何
             # 真实指南内容的 prompt 下仍会生成看起来言之有据、引用 CSCO/NCCN
@@ -414,16 +486,10 @@ async def _run_one_patient(
                 print(f"[{pid}] {pname} ... NO_EVIDENCE (canonical={canonical!r})", flush=True)
                 return
 
-            # Stage 5: 构造 prompt（D-14）
-            messages = build_patient_prompt(patient, hits)
-
-            # Stage 6: LLM 调用（含 feedback 重试一次）
-            result, score, status = await llm.complete_structured_with_feedback(
-                messages,
-                PATIENT_RECOMMENDATION_SCHEMA,
-                feedback_check=compute_citation_coverage,
-                threshold=0.5,
-                patient_id=pid,
+            # Stage 5+6: 退化感知 LLM 调用。prompt 构造（D-14 build_patient_prompt）
+            # 内置于 _llm_with_degeneration_fallback 每档，按退化情况切换 hits 规模。
+            result, score, status, attempt_meta = await _llm_with_degeneration_fallback(
+                llm, patient, hits, pid,
             )
 
             wall = time.monotonic() - t_start
@@ -433,6 +499,7 @@ async def _run_one_patient(
                 "citation_coverage": score,
                 "wall_time_s": round(wall, 2),
                 "result": result,
+                "llm_attempt": attempt_meta,  # 哪档成功（审计退化降级路径）
             }
             _atomic_write_json(output_dir / "patients" / f"{pid}.json", shard)
             print(
@@ -444,6 +511,19 @@ async def _run_one_patient(
             err_str = _format_exc(e.last_error)
             _write_failed(output_dir, pid, err_str, e.stage, last_llm_output=None)
             print(f"[{pid}] {pname} ... FAIL ({e.stage}: {err_str})", flush=True)
+        except DegenerationError as e:
+            # 2026-07-03（codex 审查）：三档降级链全退化 → 独立失败语义，不伪装
+            # partial（QG-02 诚实）。保留 content_preview 供审计退化原文。
+            _write_failed(
+                output_dir, pid, str(e), stage="degeneration",
+                last_llm_output=e.content_preview,
+            )
+            print(
+                f"[{pid}] {pname} ... FAIL (degeneration: "
+                f"finish={e.finish_reason} rep={e.repetition:.2f} "
+                f"tok={e.completion_tokens})",
+                flush=True,
+            )
         except QMDQueryError as e:
             _write_failed(output_dir, pid, str(e), stage="retrieval", last_llm_output=None)
             print(f"[{pid}] {pname} ... FAIL (retrieval: {e})", flush=True)

@@ -99,7 +99,7 @@ def test_llm_profile_yaml_falls_back_to_default(monkeypatch, yaml_with_two_profi
     assert p.api_key_env == "LLM_API_KEY"
     assert p.structured_mode == "json_schema"
     assert p.base_url == "http://partial/v1"
-    assert p.max_tokens == 65536  # yaml 无该字段，回退 dataclass 默认
+    assert p.max_tokens == 8192  # yaml 无该字段，回退 dataclass 默认
 
 
 def test_load_profiles_yaml_missing_returns_empty(tmp_path):
