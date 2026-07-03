@@ -1,8 +1,8 @@
-# Medical Guidelines Suite v3.0
+# Medical Guidelines Suite v3.1
 
 Clinical guidelines knowledge base builder, retrieval engine, and batch patient report generator.
 
-> **Active milestone — v3.1 async-pipeline (planning, Phase 1 ready to execute)**: 端到端从 ~60min 降到 <10min，引入内网 vLLM + async QMD + 病种侧车元数据，CLI 折叠为 5 子命令。Source of truth: [`docs/refactor_plan_2026-05-11.md`](docs/refactor_plan_2026-05-11.md)。规划文档：[`.planning/`](.planning/)。
+> **Active milestone — v3.1 async-pipeline (Phase 1–3 complete, E2E retrieval verified, live LLM run pending network)**: 端到端从 ~60min 降到 <10min。Phase 1（async retriever + KB sidecar）、Phase 2（vLLM client + strict schema）、Phase 3（async pipeline + `run` subcommand）全部落地，**302 tests passing**。2026-07-02 完成 Phase 3 E2E 验收后的多层检索 bug 修复（3 轮 codex 对抗式审查，8 个 bug：org/chunk 过滤大小写与路径不匹配、异常静默吞掉、QMD session 级并发卡死、CJK 打标、零证据幻觉拦截、max_tokens 截断），离线真实检索 E2E 10/10 患者跑通、病种隔离正确；唯一剩余是真实 vLLM 推理这一步（需 spark 内网，待网络恢复后一条命令收尾）。Source of truth: [`docs/refactor_plan_2026-05-11.md`](docs/refactor_plan_2026-05-11.md)。规划文档：[`.planning/`](.planning/)。
 
 ## Installation
 
@@ -66,24 +66,23 @@ Ask Claude: "HER2阳性晚期胃癌一线治疗，各指南推荐什么？"
 # Parse patient Excel
 python3 scripts/batch_pipeline.py parse --input patients.xlsx --output Output/patients.json
 
-# Orchestrate: auto-scan KB, QMD pre-retrieval, generate batch prompts
-python3 scripts/batch_pipeline.py orchestrate \
-  --patients Output/patients.json --kb-root ./guidelines --batch-size 5
+# Run end-to-end async pipeline (v3.1 — single command replaces 4-step orchestrate flow)
+python3 scripts/batch_pipeline.py run \
+  --patients Output/patients.json \
+  --output-dir Output/ \
+  --llm-profile qwen3-vllm-lan \
+  --concurrency-patients 5
 
-# (Claude executes each batch prompt → Output/batches/rag_batch_*.json)
-
-# Verify execution evidence + merge batch results + validate quality
-python3 scripts/batch_pipeline.py verify-batch --input-dir Output/batches/ --kb-root ./guidelines
-python3 scripts/batch_pipeline.py merge --input-dir Output/batches/ --output Output/rag_results.json
-python3 scripts/batch_pipeline.py validate --input Output/rag_results.json --patients Output/patients.json
+# Validate per-patient results
+python3 scripts/batch_pipeline.py validate --patients-dir Output/patients/
 
 # Generate reports
-python3 scripts/batch_pipeline.py generate --input Output/rag_results.json --format md
+python3 scripts/batch_pipeline.py generate --patients-dir Output/patients/
 ```
 
-Or simply ask Claude: "对 patients.xlsx 中的患者，批量检索指南推荐"
+The `run` subcommand (v3.1) is the primary entry point — it runs QMD pre-retrieval + LLM inference + per-patient JSON output in a single async pipeline with N-way patient concurrency. Failed patients are isolated to `Output/_failed/` and can be retried with `--resume`.
 
-The `orchestrate` command replaces manual splitting — it automatically scans the knowledge base, uses QMD hybrid retrieval (BM25 + vector + LLM reranking) to pre-retrieve relevant guideline content for each patient, and generates self-contained batch prompts with pre-retrieved evidence.
+Legacy `split / orchestrate / verify-batch / merge` subcommands are hidden (`--help` won't show them) but still callable for backward compatibility during the stabilize period.
 
 ## Output Deliverables
 
@@ -103,21 +102,27 @@ medical-guidelines-suite/
 │   ├── pdf_reading.md          # PDF processing guide
 │   ├── pdf_extraction.md       # PDF extraction methods
 │   ├── docx_reading.md         # DOCX processing guide
-│   ├── docx_extraction.md      # DOCX extraction methods
+│   ├── docx_extraction.md      # DOCX processing methods
 │   ├── index_generation.md     # Index template guide
 │   └── input_format.md         # Batch input Excel spec
 ├── templates/
 │   ├── data_structure_root.md  # Root index template
 │   └── data_structure_org.md   # Organization index template
 ├── scripts/
-│   ├── retriever.py            # QMD service wrapper (hybrid BM25 + vector + reranking)
+│   ├── retriever.py            # QMD service wrapper (sync + async, BM25 + vector + reranking)
+│   ├── llm_client.py           # AsyncLLMClient + PATIENT_RECOMMENDATION_SCHEMA + retry strategies
+│   ├── pipeline.py             # Async per-patient pipeline orchestrator (run_pipeline + 12 helpers)
+│   ├── kb_metadata.py          # KB disease metadata + synonym map + dual-layer filtering
 │   ├── extract_all.py          # Legacy batch extraction (Docling → extracted/*.md)
 │   ├── extract_guidelines.py   # v2 extraction pipeline (MinerU + Docling + VLM)
 │   ├── extraction/             # Extraction modules (pdf/docx/postprocess/vlm_describer)
-│   └── batch_pipeline.py       # Batch patient pipeline (9 subcommands incl. index, verify-batch)
-├── tests/                      # pytest test suite (173 tests, v3.0 baseline)
+│   └── batch_pipeline.py       # CLI entry point (parse/run/validate/generate/index + 4 hidden legacy)
+├── config/
+│   └── llm_profiles.yaml       # LLM profile definitions (qwen3-vllm-lan, deepseek-cloud)
+├── tests/                      # pytest test suite (289 tests)
 ├── docs/
 │   ├── refactor_plan_2026-05-11.md  # v3.1 async-pipeline source of truth (grill-me 13-round)
+│   ├── phase3_e2e_acceptance.md     # Phase 3 E2E verification checklist + sign-off template
 │   ├── v2.3-anti-laziness-spec.md  # v2.3 execution evidence spec
 │   ├── v2.2-fix-plan.md       # v2.2 design spec
 │   ├── v2.2-decisions.md      # Confirmed design decisions (D1-D9)
@@ -131,9 +136,11 @@ medical-guidelines-suite/
 ## Requirements
 
 - Python 3.9+
+- `httpx` — Async HTTP client for QMD + LLM calls (`pip install httpx`)
 - `docling` — PDF/DOCX to Markdown extraction (`pip install docling`)
 - `openpyxl` — Excel input parsing (`pip install openpyxl`)
 - `qmd` — Hybrid BM25 + vector retrieval service (`npm install -g @tobilu/qmd`)
+- `pyyaml` — LLM profile YAML parsing (`pip install pyyaml`)
 
 ## Acknowledgments
 

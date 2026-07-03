@@ -123,7 +123,15 @@ class LLMProfile:
     base_url: str
     model: str
     api_key_env: str = "LLM_API_KEY"
-    max_tokens: int = 4096
+    # 2026-07-02：曾经改成 8192（当时的估算"5 org 全命中 ≈1500-3500 token"），
+    # 真实 E2E 验收（10/10 患者）证明这个估算严重偏低——truncation 全部发生在
+    # 24309-24461 字符处，且都还卡在 guideline_results 的第一条里（还没到第二
+    # 条），说明单条指南的推荐理由本身就能逼近 8192 token 上限。真实响应可能
+    # 覆盖 CSCO/NCCN/ESMO/JGCA/CACA 最多 5 个机构，单条已经吃满预算，多条必然
+    # 撑爆。改回 65536（这是本次修复前的原值，此前无截断报告，属于有实际使用
+    # 支撑的经验值，不是随手设的占位符）。max_tokens 只是生成上限，不会强迫模
+    # 型生成更长文本，调高的代价远小于截断导致 JSON 全部非法的代价。
+    max_tokens: int = 65536
     temperature: float = 0.1
     timeout_s: int = 180
     structured_mode: str = "json_schema"
@@ -262,7 +270,26 @@ class AsyncLLMClient:
         except (KeyError, IndexError, TypeError) as e:
             raise SchemaError(f"malformed response: {e}", patient_id) from e
         except json.JSONDecodeError as e:
-            raise SchemaError(f"invalid JSON: {e}", patient_id) from e
+            # 记录 LLM 原始返回的前 200 字符用于调试
+            try:
+                preview = response_json["choices"][0]["message"]["content"][:200]
+            except Exception:
+                preview = "<no content>"
+            # 2026-07-02：真实 E2E 验收里 10/10 患者都因 max_tokens 太小
+            # （旧值 8192）在生成中途被截断成非法 JSON，报错信息只显示
+            # "invalid JSON" 完全看不出是 token 预算问题，排查花了很久。
+            # 显式检查 finish_reason == "length" 并把它写进错误信息。
+            try:
+                finish_reason = response_json["choices"][0].get("finish_reason")
+            except Exception:
+                finish_reason = None
+            truncation_note = (
+                " [TRUNCATED: finish_reason=length，很可能是 max_tokens 不够，"
+                "不是模型输出真的非法]" if finish_reason == "length" else ""
+            )
+            raise SchemaError(
+                f"invalid JSON: {e} (preview: {preview!r}){truncation_note}", patient_id
+            ) from e
         except jsonschema.ValidationError as e:
             raise SchemaError(f"schema violation: {e.message}", patient_id) from e
 

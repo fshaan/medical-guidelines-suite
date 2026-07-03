@@ -315,3 +315,92 @@ def test_t16_hit_org_various_paths():
     assert _hit_org({"path": "/x/NCCN/extracted/y.md"}) == "NCCN"
     assert _hit_org({"path": "/data/CSCO/extracted/guideline.md"}) == "CSCO"
     assert _hit_org({"path": ""}) == ""
+
+    # 2026-07-02 回归：真实 AsyncQMDService.query() 返回的 hit["path"] 是这种
+    # 裸 "<ORG>/filename.md" 格式——既没有 qmd:// 协议前缀，也没有 extracted/
+    # 段。修复前这里恒返回 ""，导致 Stage 4 org 过滤把真实检索结果全部清空
+    # （真实 E2E 运行实测：31 条 hits 被过滤到 0 条）。
+    assert _hit_org({"path": "CACA/caca_中国肿瘤整合诊治指南（caca) 胃癌2025版.md"}) == "CACA"
+    assert _hit_org({"path": "ESMO/esmo-gastric-cancer-2022.md"}) == "ESMO"
+
+
+# ---------------------------------------------------------------------------
+# T17: org 大小写一致性回归 —— 2026-07-02 codex 对抗式审查发现的 P0 bug。
+# _hit_org() 契约返回大写（T16），但 build_sidecar() 写入 org_disease_coverage.json
+# 的 key 是小写；_run_one_patient 的过滤行必须归一化后比较，否则不论 canonical
+# 是不是 None，QMD 检索结果永远被过滤成空。
+# ---------------------------------------------------------------------------
+def test_t17_org_case_mismatch_regression():
+    from scripts.pipeline import _hit_org
+    from scripts.kb_metadata import filter_orgs_by_disease
+
+    # 真实侧车格式：build_sidecar() 写入的 key 全小写
+    coverage = {"nccn": ["colorectal"], "gastric_only_org": ["gastric"]}
+    hits = [
+        {"path": "qmd://nccn/nccn-colorectal-2026.md"},  # _hit_org → "NCCN"
+        {"path": "qmd://gastric_only_org/x.md"},  # 应被病种过滤排除
+    ]
+
+    allowed_orgs = filter_orgs_by_disease(coverage, "colorectal")
+    assert allowed_orgs == ["nccn"]
+
+    # 这是 pipeline.py:330 实际使用的比较方式（.lower() 归一化后再比）
+    kept = [h for h in hits if _hit_org(h).lower() in allowed_orgs]
+    assert len(kept) == 1
+    assert kept[0]["path"] == "qmd://nccn/nccn-colorectal-2026.md"
+
+    # 回归锁点：不加 .lower() 时（旧 bug），任何 hit 都不会被保留——
+    # 证明这条过滤规则此前不论 canonical 是否为 None 都会把结果清空。
+    kept_without_fix = [h for h in hits if _hit_org(h) in allowed_orgs]
+    assert kept_without_fix == []
+
+
+# ---------------------------------------------------------------------------
+# T18: disease_type 合成回归 —— phase3_e2e_test_report_2026-07-02.md 里 3 位真实
+# 患者的 primary_site 原始格式（全角括号/逗号），验证 pipeline.py 的 fallback
+# （_synthesize_from_patient，而不是把 primary_site 原文直接当 disease_type）
+# 能被真实 config 的 synonym_map 命中，不再恒返回 None。
+# ---------------------------------------------------------------------------
+def test_t18_disease_type_synthesis_from_real_primary_site():
+    from scripts.batch_pipeline import _synthesize_from_patient
+    from scripts.kb_metadata import normalize_disease, _SYNONYM_SEED
+
+    cases = [
+        ("胃中部（M）,胃下部（L）", "gastric"),   # 报告患者1 贾培生
+        ("直肠(R)", "colorectal"),                 # 报告患者4/6 肖庆周/贾常山
+        ("横结肠(TC)", "colorectal"),               # 报告患者2 王晓群
+        ("升结肠(AC)", "colorectal"),               # 报告患者7 李学
+    ]
+    for primary_site, expected_canonical in cases:
+        patient = {"primary_site": primary_site}
+
+        # 旧 bug：primary_site 原文直接当 disease_type → 恒 None
+        assert normalize_disease(primary_site, _SYNONYM_SEED) is None
+
+        # 修复后：先经 _synthesize_from_patient 合成中文病种名，再归一化
+        synthesized = _synthesize_from_patient(patient, "disease_type")
+        assert synthesized, f"{primary_site!r} 应合成出非空 disease_type"
+        canonical = normalize_disease(synthesized, _SYNONYM_SEED)
+        assert canonical == expected_canonical, (
+            f"{primary_site!r} → synthesized={synthesized!r} → "
+            f"canonical={canonical!r}，预期 {expected_canonical!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T19: _format_exc — 空 message 异常也要保留可诊断信息。
+# 2026-07-03 回归：真实 E2E 里 vLLM 拥塞导致 httpx.ConnectError/ReadTimeout，
+# 这些异常的 str() 是空字符串，旧代码 _write_failed(str(e.last_error)) 存进
+# _failed/ 的 error 字段是空的，日志显示 "FAIL (transport: )" 完全看不出原因。
+# ---------------------------------------------------------------------------
+def test_t19_format_exc_keeps_type_when_message_empty():
+    import httpx
+    from scripts.pipeline import _format_exc
+
+    # httpx 连接/超时异常 message 常为空
+    assert _format_exc(httpx.ConnectError("")) == "ConnectError"
+    assert _format_exc(httpx.ReadTimeout("")) == "ReadTimeout"
+    # 有 message 时带上类型 + message
+    assert _format_exc(httpx.ConnectError("All connection attempts failed")) == \
+        "ConnectError: All connection attempts failed"
+    assert _format_exc(ValueError("bad value")) == "ValueError: bad value"

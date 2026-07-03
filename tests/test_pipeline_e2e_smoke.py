@@ -133,6 +133,13 @@ def _setup_kb(tmp_path):
     (meta_dir / "synonym_map.yaml").write_text(
         "结直肠癌:\n  - colorectal\n  - 结肠癌\n", encoding="utf-8"
     )
+    # 2026-07-02：org/chunk 双层过滤此前对真实数据是 no-op（bug，已修），
+    # 现在是真的在生效——不给 coverage.json 会让 allowed_orgs=[]，本文件里
+    # 用到的 nccn/csco hits 全部被 Stage 4 过滤掉，触发"零证据"保护拒绝调用
+    # LLM。不写 chunks.json：留空则 chunk 级过滤走 KBM-06 兜底保留。
+    (meta_dir / "org_disease_coverage.json").write_text(
+        json.dumps({"nccn": ["结直肠癌"], "csco": ["结直肠癌"]}), encoding="utf-8"
+    )
     return kb_root
 
 

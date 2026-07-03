@@ -1726,8 +1726,13 @@ def _validate_patients_dir(patients_dir: Path, args) -> None:
         actual_ids.add(pid)
 
         status = shard.get("status", "")
-        if status not in ("ok", "partial"):
-            errors.append(f"[{pid}] 无效 status: '{status}'（期望 ok/partial）")
+        # 2026-07-02：no_evidence 是合法结果（该患者病种在当前 KB 无相关
+        # 指南），不是无效 status——见 pipeline.py:_run_one_patient 的零证据
+        # 拦截。这种 shard result 为 None，跳过 result 级校验。
+        if status not in ("ok", "partial", "no_evidence"):
+            errors.append(f"[{pid}] 无效 status: '{status}'（期望 ok/partial/no_evidence）")
+        if status == "no_evidence":
+            continue
 
         result = shard.get("result")
         if not result:
@@ -2368,7 +2373,14 @@ def _generate_from_patients_dir(
             continue
 
         pid = shard.get("patient_id", sf.stem)
-        result = shard.get("result", {})
+        result = shard.get("result") or {}
+
+        # 2026-07-02：no_evidence shard 的 result 是 None（该患者病种在 KB
+        # 无相关指南），显式标注后跳过 result 级渲染，不当作空对象硬渲染。
+        if shard.get("status") == "no_evidence":
+            note = shard.get("note", "当前知识库无相关指南")
+            parts.append(f"\n## 患者 {pid}\n\n> ⚠️ 无检索证据：{md_escape(note)}\n")
+            continue
 
         # 患者基本信息 — 从 result 中提取（如果有）
         patient_name = result.get("patient_name", pid)

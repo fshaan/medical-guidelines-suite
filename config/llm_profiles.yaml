@@ -1,11 +1,12 @@
 # Medical Guidelines Suite — LLM Profiles
 # 入仓策略：仅元数据（base_url / model / timeout 等），不含 secret。
 # `api_key_env` 指向 env 变量名；运维侧通过 LLM_BASE_URL 覆盖 `10.0.x.x` 占位符。
+# `model` 必须等于 vLLM `--served-model-name`（不是权重路径），否则 API 请求 404。
 
 profiles:
   qwen3-vllm-lan:
-    base_url: http://10.0.x.x:8000/v1
-    model: Qwen3.5-35B-A3B
+    base_url: http://192.168.31.92:8000/v1
+    model: qwen3.6-35b  # served-model-name；实际权重 /models/nvidia/Qwen3.6-35B-A3B-NVFP4（spark 主机验证于 2026-07-02）
     api_key_env: LLM_API_KEY
     timeout_s: 180
     structured_mode: json_schema

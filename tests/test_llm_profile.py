@@ -110,7 +110,7 @@ def test_load_profiles_yaml_real_file():
         pytest.skip("config/llm_profiles.yaml not present in working tree")
     d = _load_profiles_yaml(_DEFAULT_YAML_PATH)
     assert set(d.keys()) == {"qwen3-vllm-lan", "deepseek-cloud"}
-    assert d["qwen3-vllm-lan"]["model"] == "Qwen3.5-35B-A3B"
+    assert d["qwen3-vllm-lan"]["model"] == "qwen3.6-35b"
     assert d["deepseek-cloud"]["api_key_env"] == "DEEPSEEK_API_KEY"
 
 

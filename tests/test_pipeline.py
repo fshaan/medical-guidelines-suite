@@ -122,6 +122,16 @@ def _setup_kb(tmp_path):
     (meta_dir / "synonym_map.yaml").write_text(
         "结直肠癌:\n  - colorectal\n  - 结肠癌\n", encoding="utf-8"
     )
+    # 2026-07-02：org/chunk 双层过滤此前对真实数据是 no-op（bug，已修），
+    # 现在是真的在生效——不给 coverage.json 会让 allowed_orgs=[]，_QMD_HITS
+    # 里的 nccn/csco hits 全部被 Stage 4 过滤掉，触发新的"零证据"保护直接
+    # 拒绝调用 LLM。用真实 patient disease_type（_make_mock_patient 默认
+    # "结直肠癌"）对应的 org 覆盖，让这些既有测试的 hits 能正常通过过滤。
+    # 不写 chunks.json：留空则 chunk 级过滤走 KBM-06"无 meta 保留"兜底，
+    # 不需要为每条 mock hit 伪造匹配的 chunk 元数据。
+    (meta_dir / "org_disease_coverage.json").write_text(
+        json.dumps({"nccn": ["结直肠癌"], "csco": ["结直肠癌"]}), encoding="utf-8"
+    )
     return kb_root
 
 
@@ -531,6 +541,286 @@ async def test_concurrency_caps_in_flight(
     try:
         await run_pipeline(args)
         assert in_flight["peak"] <= 2
+    finally:
+        _teardown_llm_env()
+        if tmp.exists():
+            shutil.rmtree(tmp)
+
+
+# ---------------------------------------------------------------------------
+# Test: test_run_pipeline_org_filter_case_mismatch_regression
+#
+# 2026-07-02 codex 对抗式审查发现：现有 mock KB（_setup_kb）不写 coverage/chunks，
+# 现有 LLM mock 也不检查 prompt 内容，所以 org 大小写不一致的 P0 bug（pipeline.py:330）
+# 完全测不出来——filter_orgs_by_disease 的结果被吞掉，测试照样全绿。
+# 这个测试用真实形状的侧车（build_sidecar() 风格小写 key）+ 真实形状的 QMD hit
+# path（大写 org），并检查真正传给 LLM 的 prompt 内容，而不是只测 exit code。
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+@patch("scripts.pipeline.AsyncQMDService")
+@patch("scripts.pipeline.httpx.AsyncClient")
+@patch("scripts.pipeline.AsyncLLMClient")
+async def test_run_pipeline_org_filter_case_mismatch_regression(
+    mock_llm_cls, mock_http_cls, mock_qmd_cls
+):
+    tmp = Path("/tmp/test_pipeline_org_case")
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    tmp.mkdir(parents=True)
+
+    # patients.json 无 disease_type 字段（真实 parse 输出的形状），
+    # 靠 primary_site 触发 _synthesize_from_patient fallback。
+    patient = {
+        "patient_id": "p001",
+        "patient_name": "患者1",
+        "primary_site": "直肠(R)",
+        "stage": "IV期",
+    }
+    patients_path = _make_patients_json([patient], tmp)
+    args = _default_args(tmp, patients_path)
+    args.concurrency_patients = 1
+
+    kb_root = tmp / "kb"
+    meta_dir = kb_root / ".metadata"
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    (meta_dir / "synonym_map.yaml").write_text(
+        "colorectal:\n  - 结直肠癌\n  - 直肠癌\n  - 结肠癌\n"
+        "gastric:\n  - 胃癌\n",
+        encoding="utf-8",
+    )
+    # build_sidecar() 真实写入形态：org key 全小写
+    (meta_dir / "org_disease_coverage.json").write_text(
+        json.dumps({"nccn": ["colorectal"], "caca": ["gastric"]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (meta_dir / "chunks.json").write_text("{}", encoding="utf-8")
+    _setup_llm_env()
+
+    mock_http = AsyncMock()
+    mock_http_cls.return_value = mock_http
+
+    # 真实 QMD 返回的 path 大写 org（与 collection 目录名一致），
+    # 每次 query 都返回同一对 hits：一条属于命中病种的 nccn，一条属于不该命中的 caca。
+    matching_hit = {"content": "NCCN 直肠癌一线方案", "path": "qmd://NCCN/nccn-rectalcancer-2026.md", "score": 0.9}
+    non_matching_hit = {"content": "CACA 胃癌方案", "path": "qmd://CACA/caca-gastric-2025.md", "score": 0.85}
+    mock_qmd = _make_qmd_mock(hits_per_query=[[matching_hit, non_matching_hit]] * 10)
+    mock_qmd_cls.return_value = mock_qmd
+
+    captured_messages = {}
+
+    async def capture_complete(messages, *a, **kw):
+        captured_messages["messages"] = messages
+        return (_VALID_LLM_RESULT, 0.71, "ok")
+
+    mock_llm = MagicMock()
+    mock_llm.complete_structured_with_feedback = AsyncMock(side_effect=capture_complete)
+    mock_llm_cls.return_value = mock_llm
+
+    try:
+        exit_code = await run_pipeline(args)
+        assert exit_code == 0
+
+        user_content = captured_messages["messages"][1]["content"]
+        # 修复验证：命中病种的 NCCN 检索结果必须进了 prompt
+        assert "NCCN 直肠癌一线方案" in user_content
+        # 病种过滤验证：不匹配病种的 CACA 检索结果必须被排除
+        assert "CACA 胃癌方案" not in user_content
+    finally:
+        _teardown_llm_env()
+        if tmp.exists():
+            shutil.rmtree(tmp)
+
+
+# ---------------------------------------------------------------------------
+# Test: test_run_pipeline_qmd_query_error_writes_failed_shard
+#
+# 2026-07-02 回归：Stage 3 QMD 查询此前没有专属 except，QMDQueryError/
+# httpx.RequestError 会穿透 _run_one_patient，被 gather(..., return_exceptions=True)
+# 静默吞掉——患者既不进 patients/ 也不进 _failed/，exit code 却仍是 0。
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+@patch("scripts.pipeline.AsyncQMDService")
+@patch("scripts.pipeline.httpx.AsyncClient")
+@patch("scripts.pipeline.AsyncLLMClient")
+async def test_run_pipeline_qmd_query_error_writes_failed_shard(
+    mock_llm_cls, mock_http_cls, mock_qmd_cls
+):
+    from scripts.retriever import QMDQueryError
+
+    tmp = Path("/tmp/test_pipeline_qmd_error")
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    tmp.mkdir(parents=True)
+
+    patients = [_make_mock_patient("p001", "患者1")]
+    patients_path = _make_patients_json(patients, tmp)
+    args = _default_args(tmp, patients_path)
+    _setup_kb(tmp)
+    _setup_llm_env()
+
+    mock_http = AsyncMock()
+    mock_http_cls.return_value = mock_http
+
+    # QMD 重试耗尽后抛出的真实异常类型（见 retriever.py:_post_tools_call）
+    mock_qmd = AsyncMock()
+    mock_qmd.query = AsyncMock(
+        side_effect=QMDQueryError("QMD tools/call failed after 3 attempts: timeout")
+    )
+    mock_qmd.__aenter__ = AsyncMock(return_value=mock_qmd)
+    mock_qmd.__aexit__ = AsyncMock(return_value=False)
+    mock_qmd_cls.return_value = mock_qmd
+
+    mock_llm = MagicMock()
+    mock_llm.complete_structured_with_feedback = AsyncMock()
+    mock_llm_cls.return_value = mock_llm
+
+    try:
+        exit_code = await run_pipeline(args)
+        output_dir = Path(args.output_dir)
+
+        # 核心断言：不再静默消失——必须出现在 _failed/，stage="retrieval"
+        failed_shards = list((output_dir / "_failed").glob("*.json"))
+        assert len(failed_shards) == 1
+        shard = json.loads(failed_shards[0].read_text(encoding="utf-8"))
+        assert shard["patient_id"] == "p001"
+        assert shard["stage"] == "retrieval"
+        assert "QMD" in shard["error"] or "timeout" in shard["error"]
+
+        assert list((output_dir / "patients").glob("*.json")) == []
+        assert exit_code == 1  # 有 failure，退出码必须非 0
+        # LLM 从未被调用——QMD 阶段失败应在 Stage 3 就中断，不进 Stage 6
+        mock_llm.complete_structured_with_feedback.assert_not_called()
+    finally:
+        _teardown_llm_env()
+        if tmp.exists():
+            shutil.rmtree(tmp)
+
+
+# ---------------------------------------------------------------------------
+# Test: test_run_pipeline_unexpected_exception_safety_net
+#
+# 2026-07-02 回归：run_pipeline 顶层 gather 此前不接收返回值，任何完全没被
+# _run_one_patient 分类到的异常类型（此测试模拟一个未来才会出现的新类型）
+# 也必须被兜底写进 _failed/（stage="unexpected"），而不是被吞掉。
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+@patch("scripts.pipeline.AsyncQMDService")
+@patch("scripts.pipeline.httpx.AsyncClient")
+@patch("scripts.pipeline.AsyncLLMClient")
+async def test_run_pipeline_unexpected_exception_safety_net(
+    mock_llm_cls, mock_http_cls, mock_qmd_cls
+):
+    tmp = Path("/tmp/test_pipeline_unexpected_exc")
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    tmp.mkdir(parents=True)
+
+    patients = [_make_mock_patient("p001", "患者1")]
+    patients_path = _make_patients_json(patients, tmp)
+    args = _default_args(tmp, patients_path)
+    _setup_kb(tmp)
+    _setup_llm_env()
+
+    mock_http = AsyncMock()
+    mock_http_cls.return_value = mock_http
+
+    mock_qmd = _make_qmd_mock()
+    mock_qmd_cls.return_value = mock_qmd
+
+    # 一个 _run_one_patient 内部任何 except 分支都不会捕获的异常类型
+    mock_llm = MagicMock()
+    mock_llm.complete_structured_with_feedback = AsyncMock(
+        side_effect=RuntimeError("completely unclassified failure")
+    )
+    mock_llm_cls.return_value = mock_llm
+
+    try:
+        exit_code = await run_pipeline(args)
+        output_dir = Path(args.output_dir)
+
+        failed_shards = list((output_dir / "_failed").glob("*.json"))
+        assert len(failed_shards) == 1
+        shard = json.loads(failed_shards[0].read_text(encoding="utf-8"))
+        assert shard["patient_id"] == "p001"
+        assert shard["stage"] == "unexpected"
+        assert "completely unclassified failure" in shard["error"]
+        assert exit_code == 1
+    finally:
+        _teardown_llm_env()
+        if tmp.exists():
+            shutil.rmtree(tmp)
+
+
+# ---------------------------------------------------------------------------
+# Test: test_run_pipeline_zero_hits_never_calls_llm
+#
+# 2026-07-02 回归（codex 对抗式审查 P0，两轮迭代）：QMD 检索/双层过滤后如果
+# hits=[]，此前会照常构造 prompt 并调用 LLM——模型在完全没有真实指南内容
+# 的情况下仍可能生成看起来言之有据、引用 CSCO/NCCN 的 JSON（凭训练知识编
+# 造，不是真的检索到的内容），而 compute_citation_coverage() 对空
+# retrieval_sources 返回 1.0（满分），会被当成正常 "ok" shard 写出。对医学
+# 指南系统这是不可接受的静默幻觉风险——必须在调用 LLM 前就拦截。
+# 第二轮修正：不应把"该病种在 KB 里没有相关指南"（合法结果，比如罕见病）
+# 当成故障计入 failed/exit_code=1——那会让 QG-02"10 例 0 FAIL"对完全没有
+# bug 的患者产生假阳性。改为独立 status="no_evidence"，写进 patients/ 而
+# 不是 _failed/，exit_code 不受影响。
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+@patch("scripts.pipeline.AsyncQMDService")
+@patch("scripts.pipeline.httpx.AsyncClient")
+@patch("scripts.pipeline.AsyncLLMClient")
+async def test_run_pipeline_zero_hits_never_calls_llm(
+    mock_llm_cls, mock_http_cls, mock_qmd_cls
+):
+    tmp = Path("/tmp/test_pipeline_zero_hits")
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    tmp.mkdir(parents=True)
+
+    patients = [_make_mock_patient("p001", "患者1")]
+    patients_path = _make_patients_json(patients, tmp)
+    args = _default_args(tmp, patients_path)
+    _setup_kb(tmp)  # coverage.json 只覆盖 结直肠癌，QMD 这里返回空结果
+    _setup_llm_env()
+
+    mock_http = AsyncMock()
+    mock_http_cls.return_value = mock_http
+
+    # QMD 正常返回，但检索不到任何相关内容（不是异常，是真的空结果）
+    mock_qmd = AsyncMock()
+    mock_qmd.query = AsyncMock(return_value=[])
+    mock_qmd.__aenter__ = AsyncMock(return_value=mock_qmd)
+    mock_qmd.__aexit__ = AsyncMock(return_value=False)
+    mock_qmd_cls.return_value = mock_qmd
+
+    mock_llm = MagicMock()
+    mock_llm.complete_structured_with_feedback = AsyncMock()
+    mock_llm_cls.return_value = mock_llm
+
+    try:
+        exit_code = await run_pipeline(args)
+        output_dir = Path(args.output_dir)
+
+        # 核心断言：LLM 绝对不能在零证据下被调用
+        mock_llm.complete_structured_with_feedback.assert_not_called()
+
+        # 不进 _failed/，不算故障
+        assert list((output_dir / "_failed").glob("*.json")) == []
+
+        patient_shards = list((output_dir / "patients").glob("*.json"))
+        assert len(patient_shards) == 1
+        shard = json.loads(patient_shards[0].read_text(encoding="utf-8"))
+        assert shard["patient_id"] == "p001"
+        assert shard["status"] == "no_evidence"
+        assert shard["result"] is None
+        assert "no relevant retrieval hits" in shard["note"]
+
+        rag_results = json.loads((output_dir / "rag_results.json").read_text(encoding="utf-8"))
+        assert rag_results["summary"]["no_evidence"] == 1
+        assert rag_results["summary"]["failed"] == 0
+        assert rag_results["summary"]["total"] == 1
+
+        assert exit_code == 0  # no_evidence 不是故障，不能拖累 exit code
     finally:
         _teardown_llm_env()
         if tmp.exists():

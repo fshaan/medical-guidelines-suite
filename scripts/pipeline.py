@@ -37,10 +37,23 @@ from scripts.llm_client import (
     LLMProfile,
     PATIENT_RECOMMENDATION_SCHEMA,
 )
-from scripts.retriever import AsyncQMDService
+from scripts.retriever import AsyncQMDService, QMDQueryError
 
 # 模块级正则：提取 recommendation 文本中的 [n] 引用编号
 _CITATION_RE = re.compile(r"\[(\d+)\]")
+
+
+def _format_exc(exc: Exception) -> str:
+    """把异常格式化成非空、可诊断的字符串。
+
+    2026-07-03 修复：真实 E2E 里 vLLM 中途重启，`httpx.ConnectError` 的
+    message 是空字符串（`str(httpx.ConnectError('')) == ''`），导致
+    `_write_failed` 存进 _failed/ 的 error 字段是空的，`FAIL (transport: )`
+    完全看不出失败原因。始终带上异常类型名，message 为空时也能定位。
+    """
+    name = type(exc).__name__
+    msg = str(exc)
+    return f"{name}: {msg}" if msg else name
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
@@ -143,6 +156,9 @@ def _merge_rag_results(output_dir: Path, wall_time_s: float) -> dict:
     ok = 0
     partial = 0
     failed = 0
+    # 2026-07-02：no_evidence 是合法结果（该患者病种在当前 KB 里没有相关
+    # 指南），不是故障——单独计数，不计入 failed，不影响 exit_code。
+    no_evidence = 0
 
     for p in sorted(patients_dir.glob("*.json")):
         shard = json.loads(p.read_text(encoding="utf-8"))
@@ -156,6 +172,8 @@ def _merge_rag_results(output_dir: Path, wall_time_s: float) -> dict:
             ok += 1
         elif shard["status"] == "partial":
             partial += 1
+        elif shard["status"] == "no_evidence":
+            no_evidence += 1
 
     for p in sorted(failed_dir.glob("*.json")):
         shard = json.loads(p.read_text(encoding="utf-8"))
@@ -170,9 +188,10 @@ def _merge_rag_results(output_dir: Path, wall_time_s: float) -> dict:
         "patients": patients,
         "failures": failures,
         "summary": {
-            "total": ok + partial + failed,
+            "total": ok + partial + no_evidence + failed,
             "ok": ok,
             "partial": partial,
+            "no_evidence": no_evidence,
             "failed": failed,
             "wall_time_s": round(wall_time_s, 2),
         },
@@ -257,6 +276,11 @@ def _hit_org(hit: dict) -> str:
     启发式：
     - qmd://<org>/... → 取第二段
     - /path/to/<ORG>/extracted/... → 取 extracted 前一段
+    - <ORG>/filename.md（无协议前缀、无 extracted 段）→ 取第一段
+      （2026-07-02 修复：真实 AsyncQMDService.query() 返回的 hit["path"] 就是
+      这种裸格式，例如 "CACA/caca_....md"——此前只认前两种格式，对真实数据
+      恒返回 ""，导致 Stage 4 org 过滤把所有检索结果清空，不管 canonical 是
+      什么。真实 E2E 运行验证：修复前 hits 从 31 条被过滤到 0 条）
     - 无法提取 → ""
     """
     path = hit.get("path", "")
@@ -272,6 +296,9 @@ def _hit_org(hit: dict) -> str:
     for i, seg in enumerate(parts):
         if seg == "extracted" and i >= 1:
             return parts[i - 1].upper()
+    # 裸 "<ORG>/filename" 格式（真实 QMD 返回的常见形态）
+    if len(parts) >= 2 and parts[0]:
+        return parts[0].upper()
     return ""
 
 
@@ -297,7 +324,17 @@ async def _run_one_patient(
     """单患者子流水线：6 stages 串行（D-02）。
 
     异常分级（D-05）：
-    - LLMFailure → _write_failed
+    - LLMFailure → _write_failed (stage=e.stage，一般 "transport"/"schema")
+    - QMDQueryError → _write_failed (stage="retrieval")
+      （2026-07-02 修复 + codex 对抗式审查后收紧：Stage 3 QMD 查询此前没有
+      专属 except，httpx.RequestError 会穿透 _run_one_patient，被 run_pipeline
+      里没接收返回值的 gather(..., return_exceptions=True) 静默吞掉——患者
+      既不进 patients/ 也不进 _failed/，summary 全 0 但 exit code 仍是 0。
+      分类边界现在绑定在 Stage 3 代码位置本身——只在那段 gather 调用外层
+      catch httpx.RequestError 并立刻转成 QMDQueryError，而不是在这个共享
+      except 块里裸 catch httpx.RequestError；后者理论上会跟 Stage 6 LLM
+      调用产生的同类异常混淆，即使 llm_client.py 当前总是把自己的
+      RequestError 包成 LLMFailure、实际不会泄漏）
     - KeyError/ValueError → _write_failed (stage="build")
     - asyncio.CancelledError → raise（透传，不写 shard）
     - 无 except Exception 通配（WR-08）
@@ -307,6 +344,14 @@ async def _run_one_patient(
         pname = patient.get("patient_name", "?")
         t_start = time.monotonic()
         try:
+            # Phase 3 fix: patients.json 无 disease_type，从 primary_site 关键词合成
+            # （复用 batch_pipeline._synthesize_from_patient 的 _SITE_TO_DISEASE 子串
+            # 匹配逻辑，而不是把 primary_site 原始自由文本直接当 disease_type——后者
+            # 含全角括号/逗号，normalize_disease 的 tokenizer 只切 -_. 无法匹配）
+            from scripts.batch_pipeline import _synthesize_from_patient
+            disease_type = patient.get("disease_type") or _synthesize_from_patient(patient, "disease_type")
+            patient = {**patient, "disease_type": disease_type}
+
             # Stage 1: 特征提取（纯函数，从 batch_pipeline 复用）
             features = extract_patient_features(patient)
             queries = build_queries(patient, features)
@@ -315,15 +360,59 @@ async def _run_one_patient(
             canonical = normalize_disease(patient.get("disease_type"), synonym_map)
 
             # Stage 3: QMD 并发查询（Phase 1 D-03 sem 自动生效）
-            hits_per_query = await asyncio.gather(
-                *[qmd.query(q) for q in queries]
-            )
+            # 局部转换为 QMDQueryError（而不是让裸 httpx.RequestError 传到下面
+            # 共享的 except 块）：codex 对抗式审查指出，如果共享 except 直接catch
+            # httpx.RequestError，理论上会跟 Stage 6 LLM 调用产生的同类异常混淆
+            # （虽然当前 llm_client.py 已把自己的 RequestError 包成 LLMFailure，
+            # 不会真的泄漏到这里，但把分类逻辑绑定到"代码位置"而不是"猜异常类型
+            # 的来源"更稳，不依赖 llm_client.py 未来不变）。
+            try:
+                hits_per_query = await asyncio.gather(
+                    *[qmd.query(q) for q in queries]
+                )
+            except httpx.RequestError as e:
+                raise QMDQueryError(f"QMD query stage failed: {e}") from e
             hits = _dedupe_hits([h for sub in hits_per_query for h in sub])
 
             # Stage 4: 双层过滤（Phase 1 D-10）
+            # _hit_org() 按既有测试契约返回大写（"NCCN"），侧车 org_disease_coverage.json
+            # 的 key 是 build_sidecar() 写入时 .lower() 过的（"nccn"）——比较前必须归一化，
+            # 否则不管 canonical 是不是 None，这行永远把所有 hits 过滤成空。
             allowed_orgs = filter_orgs_by_disease(coverage, canonical)
-            hits = [h for h in hits if _hit_org(h) in allowed_orgs]
+            hits = [h for h in hits if _hit_org(h).lower() in allowed_orgs]
             hits = filter_chunks_by_disease(hits, chunks_meta, canonical)
+
+            # 2026-07-02 修复（codex 对抗式审查 P0）：零检索证据不能静默喂给
+            # LLM。此前即使 hits=[]，Stage 5/6 依然照常执行——LLM 在没有任何
+            # 真实指南内容的 prompt 下仍会生成看起来言之有据、引用 CSCO/NCCN
+            # 的 JSON（凭训练知识编造，不是真的检索到的内容），而
+            # compute_citation_coverage() 对空 retrieval_sources 返回 1.0（满
+            # 分），会被当成正常 "ok" shard 写出——对医学指南系统这是不可接受
+            # 的静默幻觉风险。改为在真正调用 LLM 前就拦截。
+            #
+            # 2026-07-02 第二轮修复（codex 对抗式审查）：不应该把这种情况当
+            # QMDQueryError/写进 _failed/ 计入 failed——QMD 本身没有失败，只是
+            # 这个患者的病种在当前 KB 里确实没有相关指南，这是合法的正常结果
+            # （比如罕见病，不是 bug）。原实现会让 QG-02"10 例 0 FAIL"验收门
+            # 对这种患者产生假阳性失败。改为写一个独立 status="no_evidence"
+            # 的 patients/ shard（不进 _failed/，不计入 failed 计数，退出码
+            # 不受影响），跟 LLMFailure/QMDQueryError 等真实故障区分开。
+            if not hits:
+                wall = time.monotonic() - t_start
+                shard = {
+                    "patient_id": pid,
+                    "status": "no_evidence",
+                    "citation_coverage": None,
+                    "wall_time_s": round(wall, 2),
+                    "result": None,
+                    "note": (
+                        f"no relevant retrieval hits after org/chunk filtering "
+                        f"(canonical={canonical!r}, allowed_orgs={allowed_orgs})"
+                    ),
+                }
+                _atomic_write_json(output_dir / "patients" / f"{pid}.json", shard)
+                print(f"[{pid}] {pname} ... NO_EVIDENCE (canonical={canonical!r})", flush=True)
+                return
 
             # Stage 5: 构造 prompt（D-14）
             messages = build_patient_prompt(patient, hits)
@@ -352,8 +441,12 @@ async def _run_one_patient(
             )
 
         except LLMFailure as e:
-            _write_failed(output_dir, pid, str(e.last_error), e.stage, last_llm_output=None)
-            print(f"[{pid}] {pname} ... FAIL ({e.stage}: {e.last_error})", flush=True)
+            err_str = _format_exc(e.last_error)
+            _write_failed(output_dir, pid, err_str, e.stage, last_llm_output=None)
+            print(f"[{pid}] {pname} ... FAIL ({e.stage}: {err_str})", flush=True)
+        except QMDQueryError as e:
+            _write_failed(output_dir, pid, str(e), stage="retrieval", last_llm_output=None)
+            print(f"[{pid}] {pname} ... FAIL (retrieval: {e})", flush=True)
         except (KeyError, ValueError) as e:
             _write_failed(output_dir, pid, str(e), stage="build", last_llm_output=None)
             print(f"[{pid}] {pname} ... FAIL (build: {e})", flush=True)
@@ -399,7 +492,7 @@ async def run_pipeline(args: argparse.Namespace) -> int:
                     semaphore=asyncio.Semaphore(profile.concurrency),
                 )
 
-                await asyncio.gather(
+                results = await asyncio.gather(
                     *[
                         _run_one_patient(
                             p,
@@ -415,6 +508,22 @@ async def run_pipeline(args: argparse.Namespace) -> int:
                     ],
                     return_exceptions=True,  # D-01: 单 patient 失败不击垮 gather
                 )
+                # 2026-07-02 修复：此前 gather 的返回值没被接收，任何没被
+                # _run_one_patient 内部 except 分类到的异常（旧例：QMD 查询
+                # 超时）会直接消失——不写 _failed/、不打日志，summary 全 0
+                # 但 exit code 仍是 0，看起来像"什么都没发生"。这是保底安全网：
+                # isinstance(r, Exception) 天然排除 asyncio.CancelledError
+                # （Python 3.8+ 继承自 BaseException 而非 Exception），
+                # 保留 D-05 "CancelledError 不写 shard" 的设计。
+                for p, r in zip(to_run, results):
+                    if isinstance(r, Exception):
+                        pid = p.get("patient_id", "unknown")
+                        print(
+                            f"[{pid}] UNEXPECTED exception escaped _run_one_patient "
+                            f"(未被内部 except 分类，视为 bug): {r!r}",
+                            file=sys.stderr, flush=True,
+                        )
+                        _write_failed(output_dir, pid, repr(r), stage="unexpected", last_llm_output=None)
     finally:
         # D-07: Ctrl-C 也要尽力写 rag_results.json
         wall = time.monotonic() - wall_start
@@ -426,7 +535,8 @@ async def run_pipeline(args: argparse.Namespace) -> int:
     s = aggregate["summary"]
     print(
         f"Total: {s['total']}  OK: {s['ok']}  Partial: {s['partial']}  "
-        f"Failed: {s['failed']}  Wall: {s['wall_time_s']:.1f}s  Exit: {exit_code}",
+        f"No_evidence: {s['no_evidence']}  Failed: {s['failed']}  "
+        f"Wall: {s['wall_time_s']:.1f}s  Exit: {exit_code}",
         flush=True,
     )
     return exit_code

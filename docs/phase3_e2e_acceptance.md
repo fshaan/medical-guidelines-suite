@@ -35,16 +35,20 @@
 ## 1. 执行 parse → run 流水线（QG-01）
 
 ```bash
-python3 scripts/batch_pipeline.py parse --input Input/2026-4-23.xlsx --output Output/patients.json
-time python3 scripts/batch_pipeline.py run \
+python3 -m scripts.batch_pipeline parse --input Input/2026-4-23.xlsx --output Output/patients.json
+time python3 -m scripts.batch_pipeline run \
   --patients Output/patients.json \
   --output-dir Output/ \
   --llm-profile qwen3-vllm-lan \
-  --concurrency-patients 5 \
+  --concurrency-patients 2 \
   --concurrency-qmd 8
 ```
 
+（`scripts/batch_pipeline.py` 用了包内相对导入，需要用 `-m scripts.batch_pipeline` 或 `PYTHONPATH=.` 方式调用，否则报 `ModuleNotFoundError: No module named 'scripts'`）
+
 **验收门**：wall time 必须 < 10 min（QG-01）
+
+**并发参数说明（2026-07-02 更新）**：spark 上的 vLLM 以 `--max-num-seqs 4` 启动，实测 `--concurrency-patients` 超过 2 会导致 slot 占满、后续请求排队甚至超时（见 `phase3_e2e_test_report_2026-07-02.md`）。已把默认验收命令改为 `--concurrency-patients 2`；如果 spark 上的 vLLM 部署参数放宽了 `--max-num-seqs`，可以相应调大。
 
 **失败诊断**：
 - wall time 超时但 QMD/LLM 单调用正常 → 并发未生效，检查 semaphore 注入

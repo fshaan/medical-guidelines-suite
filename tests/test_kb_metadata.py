@@ -105,6 +105,56 @@ def test_infer_chunk_tags_known_false_positive_on_organ_token():
     )
 
 
+def test_infer_chunk_tags_splits_on_whitespace():
+    """2026-07-02 回归：真实 KB 里大量文件用空格分隔（如 ESMO/JGCA 的
+    "esmo gastric cancer 2022.md"），旧的 _FILENAME_TOKEN_RE 只切
+    -_. 不切空白，整段 stem 留成一个 token，exact-match 永远打不上
+    单词级 alias。真实数据验证：org_disease_coverage.json 里 esmo/jgca
+    此前恒为空 []，修复后正确打上 gastric。
+    """
+    assert infer_chunk_tags("esmo gastric cancer 2022", _SYNONYM_SEED) == ["gastric"]
+    assert infer_chunk_tags(
+        "jgca_japanese gastric cancer treatment guidelines 2021 (6th edition)",
+        _SYNONYM_SEED,
+    ) == ["gastric"]
+
+
+def test_infer_chunk_tags_cjk_substring_match_for_unbroken_chinese_filenames():
+    """2026-07-02 回归：CSCO/CACA 的中文文件名（如 "csco_胃癌诊疗指南2021"）
+    病种词前后完全没有分隔符，整段留成一个 token，exact-token match 恒 miss
+    （真实数据：67/97 个 CSCO 文件此前 disease_tags 全是空 []——CSCO 是 KB
+    里最大的中文指南来源）。子串匹配修复必须用轻量归一化（不做后缀剥离）的
+    原始 alias 做长度判断——"胃癌"是 2 字符，但 _normalize_token 的后缀
+    剥离会把它退化成单字"胃"，如果长度检查用的是剥离后的形式，"胃癌"这个
+    最常见的疾病名反而会被误判成单字器官别名而被排除（实测踩过这个坑）。
+    """
+    assert infer_chunk_tags("csco_胃癌诊疗指南2021", _SYNONYM_SEED) == ["gastric"]
+    assert infer_chunk_tags("csco_结直肠癌诊疗指南2021", _SYNONYM_SEED) == ["colorectal"]
+    assert infer_chunk_tags(
+        "caca_中国肿瘤整合诊治指南（caca) 胃癌2025版", _SYNONYM_SEED
+    ) == ["gastric"]
+    # 单字器官别名（"胃"单独一个字）刻意不参与子串匹配——WR-04 记录的中文
+    # 歧义器官误命中风险边界不应放大。
+    assert infer_chunk_tags("csco_胃肠间质瘤诊疗指南2022", _SYNONYM_SEED) == []
+
+
+def test_infer_chunk_tags_cjk_substring_rejects_bare_organ_names():
+    """2026-07-02 回归（codex 对抗式审查）：子串匹配的边界必须是"alias 本身
+    带疾病后缀（癌/瘤/cancer/tumor...）"，不能只看长度。synonym_map 里同时
+    收了裸器官名 alias（"胰腺"/"结肠"/"直肠"/"乳腺"/"宫颈"，2+ 字符但不带
+    疾病后缀）——如果只按长度放行，会把下面这些支持治疗/良性疾病/炎症指南
+    误标成对应癌症相关，污染检索：
+    - 胰腺炎指南 → pancreatic（错的，胰腺炎不是胰腺癌）
+    - 乳腺良性疾病指南 → breast（错的）
+    - 结肠息肉指南 → colorectal（错的，息肉不是癌）
+    真实数据实测：修复前这三条全部假阳性，修复后全部正确返回 []。
+    """
+    assert infer_chunk_tags("胰腺炎诊疗指南2022", _SYNONYM_SEED) == []
+    assert infer_chunk_tags("乳腺良性疾病诊疗指南2022", _SYNONYM_SEED) == []
+    assert infer_chunk_tags("结肠息肉诊疗指南2022", _SYNONYM_SEED) == []
+    assert infer_chunk_tags("宫颈筛查指南2022", _SYNONYM_SEED) == []
+
+
 # ── filter_orgs_by_disease ────────────────────────────────────────────
 
 def test_filter_orgs_drop_unmatched():
@@ -149,6 +199,29 @@ def test_filter_chunks_none_returns_all():
     hits = [{"path": "qmd://nccn/a.md"}, {"path": "qmd://esmo/b.md"}]
     kept = filter_chunks_by_disease(hits, {}, None)
     assert kept == hits
+
+
+def test_filter_chunks_fuzzy_matches_real_qmd_path_format():
+    """2026-07-02 回归：真实 AsyncQMDService.query() 返回的 hit["path"] 是
+    QMD 自己生成的文件名 slug（连字符），跟 build_sidecar() 落盘 chunks.json
+    时用 Path.name 原样拼出的 key（下划线/空格/全角括号）不是同一套表示，
+    精确 dict.get(path) 恒 miss，导致 chunk 级过滤对真实数据完全形同虚设
+    （这正是 v3.1 milestone 最初要解决的"结直肠癌命中胃癌 chunk"问题的直接
+    成因）。真实样本：CACA 一份文件的两种表示已验证模糊匹配后完全一致。
+    """
+    # QMD 返回的真实 hit path（连字符 slug）
+    hits = [{"path": "CACA/caca-中国肿瘤整合诊治指南-caca-胃癌2025版.md", "score": 0.9}]
+    # build_sidecar() 落盘的真实 chunks.json key（下划线+空格+全角括号）
+    meta = {
+        "qmd://caca/caca_中国肿瘤整合诊治指南（caca) 胃癌2025版.md": {
+            "disease_tags": ["colorectal"], "org": "caca", "guideline_version": "2025",
+        }
+    }
+    # gastric 患者查询命中这份被标为 colorectal 的文件 → 必须被剔除
+    # （精确匹配 bug 存在时：meta lookup 恒 None，KBM-06 兜底"保留"，
+    # 这条断言在旧代码下会失败——证明模糊匹配确实生效了）
+    kept = filter_chunks_by_disease(hits, meta, "gastric")
+    assert kept == []
 
 
 # ── load / seed synonym_map ──────────────────────────────────────────

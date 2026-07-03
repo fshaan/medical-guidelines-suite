@@ -346,3 +346,144 @@ async def test_async_qmd_aclose_error_does_not_overwrite_caller_exception(
             raise ValueError("business error")
 
     proc.terminate.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("scripts.retriever.subprocess.Popen")
+@patch("scripts.retriever.httpx.AsyncClient")
+async def test_async_qmd_query_retries_transport_error_then_succeeds(
+    mock_client_cls, mock_popen
+):
+    """2026-07-02 回归：_post_tools_call 此前对 tools/call 阶段的 httpx.RequestError
+    零重试——单次 ReadTimeout 直接穿透，未被 pipeline.py 任何 except 分类，
+    被 gather(..., return_exceptions=True) 静默吞掉（患者既不进 patients/
+    也不进 _failed/）。现在应重试到第 3 次成功。
+    """
+    import httpx
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    mock_popen.return_value = proc
+
+    posts = [
+        _mk_http_response(session_id="s1"),  # initialize
+        httpx.ReadTimeout("read timed out"),  # tools/call attempt 1
+        httpx.ReadTimeout("read timed out"),  # tools/call attempt 2
+        _mk_http_response(session_id="s1", body=_empty_qmd_result()),  # attempt 3 ok
+    ]
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=posts)
+    mock_client.aclose = AsyncMock()
+    mock_client_cls.return_value = mock_client
+
+    from scripts.retriever import AsyncQMDService
+
+    with patch("scripts.retriever.asyncio.sleep", new=AsyncMock()):
+        async with AsyncQMDService(port=9999) as svc:
+            results = await svc.query("test")
+
+    assert results == []
+    assert mock_client.post.await_count == 4  # initialize + 3 tools/call attempts
+
+    # codex 对抗式审查 P1：round 1 修复保留了 180s read timeout + 3 次重试，
+    # 最坏情况把单次 query 挂起时间从"静默消失"变成"543s 才报错"，比原 bug
+    # 对 wall-time SLA 更差。round 2 把 read timeout 收到 30s——这里锁死这个值，
+    # 防止以后有人为了"更保险"又悄悄调回 180。
+    tools_call_kwargs = [
+        c.kwargs for c in mock_client.post.await_args_list[1:]
+        if "timeout" in c.kwargs and isinstance(c.kwargs["timeout"], httpx.Timeout)
+    ]
+    assert tools_call_kwargs, "至少一次 tools/call 应带 httpx.Timeout 参数"
+    for kwargs in tools_call_kwargs:
+        assert kwargs["timeout"].read == 30, (
+            f"QMD tools/call read timeout 必须 <=30s（fail-fast），实际 {kwargs['timeout'].read}"
+        )
+
+
+@pytest.mark.asyncio
+@patch("scripts.retriever.subprocess.Popen")
+@patch("scripts.retriever.httpx.AsyncClient")
+async def test_async_qmd_query_raises_qmd_query_error_after_exhausting_retries(
+    mock_client_cls, mock_popen
+):
+    """2026-07-02 回归：3 次全部 timeout 后必须抛出可分类的 QMDQueryError，
+    而不是让裸 httpx.ReadTimeout 穿透到 pipeline.py 没有对应 except 的位置。
+    """
+    import httpx
+    from scripts.retriever import AsyncQMDService, QMDQueryError
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    mock_popen.return_value = proc
+
+    posts = [
+        _mk_http_response(session_id="s1"),  # initialize
+        httpx.ReadTimeout("read timed out"),
+        httpx.ReadTimeout("read timed out"),
+        httpx.ReadTimeout("read timed out"),
+    ]
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=posts)
+    mock_client.aclose = AsyncMock()
+    mock_client_cls.return_value = mock_client
+
+    with patch("scripts.retriever.asyncio.sleep", new=AsyncMock()):
+        async with AsyncQMDService(port=9999) as svc:
+            with pytest.raises(QMDQueryError, match="3 attempts"):
+                await svc.query("test")
+
+
+@pytest.mark.asyncio
+@patch("scripts.retriever.subprocess.Popen")
+@patch("scripts.retriever.httpx.AsyncClient")
+async def test_async_qmd_session_lock_serializes_concurrent_tools_call(
+    mock_client_cls, mock_popen
+):
+    """2026-07-02 回归（真实 spark E2E 复现）：两个并发请求打到同一个 qmd MCP
+    session 时，qmd server 会让其中一个永远收不到响应（不是变慢，是卡死）。
+    两个独立 AsyncQMDService 实例（各自独立 session）并发完全没问题，证实是
+    session 级限制。self._session_lock 必须保证同一 session 任何时刻最多只有
+    一个 tools/call 请求在途——这里用一个会在"并发检测到第二个在途请求"时
+    模拟卡死（httpx.ReadTimeout）的 mock 复现该 bug，验证锁生效后不会触发。
+    """
+    import httpx
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    mock_popen.return_value = proc
+
+    in_flight = {"current": 0, "peak": 0}
+
+    async def racy_post(*args, **kwargs):
+        body = kwargs.get("json", {})
+        if body.get("method") == "initialize":
+            return _mk_http_response()
+        in_flight["current"] += 1
+        in_flight["peak"] = max(in_flight["peak"], in_flight["current"])
+        try:
+            if in_flight["current"] > 1:
+                # 复现真实 qmd 行为：第二个并发 tools/call 永远拿不到响应
+                raise httpx.ReadTimeout("simulated qmd session concurrency hang")
+            await asyncio.sleep(0.02)
+            return _mk_http_response(body=_empty_qmd_result())
+        finally:
+            in_flight["current"] -= 1
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=racy_post)
+    mock_client.aclose = AsyncMock()
+    mock_client_cls.return_value = mock_client
+
+    from scripts.retriever import AsyncQMDService
+
+    with patch("scripts.retriever.asyncio.sleep", new=AsyncMock()):
+        async with AsyncQMDService(port=9999) as svc:
+            results = await asyncio.gather(*[svc.query(f"q{i}") for i in range(5)])
+
+    assert len(results) == 5
+    # 核心断言：加锁后同一 session 任何时刻最多 1 个 tools/call 在途
+    assert in_flight["peak"] == 1, (
+        f"tools/call 并发峰值应恰好为 1（session 级串行化），实际 {in_flight['peak']}"
+    )

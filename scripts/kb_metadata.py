@@ -25,8 +25,45 @@ _DISEASE_SUFFIX_RE = re.compile(
 # 提取 guideline_version 的年份正则（取 H1 文本里最后一个 4 位数字）
 _YEAR_RE = re.compile(r"\b(\d{4})\b")
 
-# 文件名 token 切分（连字符 / 下划线 / 点）
-_FILENAME_TOKEN_RE = re.compile(r"[-_.]")
+# 文件名模糊匹配用：去掉一切非字母数字/CJK 字符（连字符、下划线、空格、全/半角
+# 括号...）。2026-07-02 修复：真实 AsyncQMDService.query() 返回的 hit["path"]
+# 里的文件名是 QMD 自己内部生成的 slug（如 "caca-中国肿瘤整合诊治指南-caca-
+# 胃癌2025版.md"），跟 build_sidecar() 落盘 chunks.json 时用 Path.name 原样
+# 拼出的 key（如 "caca_中国肿瘤整合诊治指南（caca) 胃癌2025版.md"）是两套独立
+# 生成的"同一文件"表示，标点/连字符/下划线/空格/全半角括号全都不对齐，精确
+# 字符串匹配恒为 miss。剥掉全部标点后两者字母数字/CJK 序列完全一致（真实数据
+# 验证过），用这个做模糊匹配 key。
+_NON_ALNUM_CJK_RE = re.compile(r"[^0-9a-zA-Z一-鿿]+")
+
+
+def _canonical_filename(path: str) -> str:
+    """取路径最后两段（org + 文件名），剥掉标点、转小写，用于跨表示形式
+    模糊匹配。
+
+    2026-07-02 codex 对抗式审查发现：只取最后一段文件名会丢掉 org 维度——
+    如果不同机构恰好有同名/标点差异后撞车的文件名，会被错误合并成同一个
+    canonical key，metadata 张冠李戴。带上 org 段可以在真实碰撞发生前提前
+    收窄命中范围（真实 97 条 chunks.json + 109 个 extracted 文件已验证过
+    当前 KB 无碰撞，这里是防御未来数据集扩张时出现同名文件）。
+    """
+    p = (path or "")
+    if p.startswith("qmd://"):
+        p = p[len("qmd://"):]
+    parts = [seg for seg in p.split("/") if seg]
+    tail = "/".join(parts[-2:]) if len(parts) >= 2 else (parts[-1] if parts else "")
+    return _NON_ALNUM_CJK_RE.sub("", tail).lower()
+
+# 文件名 token 切分（连字符 / 下划线 / 点 / 空白）
+# 2026-07-02 修复：真实 KB 里大量文件用空格分隔（如 "esmo gastric cancer
+# 2022.md"、"jgca_japanese gastric cancer treatment guidelines 2021
+# (6th edition).md"），此前不切空白导致这些文件名整段留成一个 token，永远
+# exact-match 不上 synonym_map 里的单词级别 alias（"gastric"/"colorectal"）。
+# 真实数据验证：org_disease_coverage.json 里 esmo/jgca 此前都是空 []。
+# 注：CSCO/CACA 的中文文件名（病种词前后完全没有空白/连字符分隔，如
+# "csco_胃癌诊疗指南2021.md"）这条修复本身覆盖不到——那是 exact-token 匹配
+# 策略本身的结构性限制，另在 infer_chunk_tags() 里用限定长度>=2 的 CJK
+# 子串匹配单独修复（见该函数 2026-07-02 注释）。
+_FILENAME_TOKEN_RE = re.compile(r"[-_.\s]+")
 
 
 # ── 内置 seed 词表（D-08，10 个 canonical_key）─────────────────────────
@@ -150,6 +187,9 @@ def normalize_disease(
     return None
 
 
+_CJK_RE = re.compile(r"[一-鿿]")
+
+
 def infer_chunk_tags(file_name: str, synonym_map: dict) -> list[str]:
     """从文件名（含或不含 .md / org 前缀）推断 canonical_keys 集合。
 
@@ -160,16 +200,54 @@ def infer_chunk_tags(file_name: str, synonym_map: dict) -> list[str]:
     `pancreas-research.md` → 归 pancreatic）。Conventions.md 约定 KB 文件
     命名应避免疾病 alias 与非疾病 token 混排；Phase 2 计划引入 stop-token
     过滤做代码层防御。
+
+    2026-07-02 修复：真实 KB 里 CSCO/CACA 的中文文件名（如
+    "csco_胃癌诊疗指南2021.md"）病种词前后完全没有分隔符可切——
+    "胃癌诊疗指南2021" 整段留成一个 token，exact-token match 恒 miss（真实
+    数据验证：67/97 个 CSCO 文件此前 disease_tags 全是空 []，CSCO 是 KB 里
+    最大的中文指南来源，系统性排除会直接破坏"跨指南对比"的核心价值）。
+    对长度 >= 2 的 CJK alias 做子串匹配作为补充，刻意只限定 CJK 且长度 >= 2
+    （排除"胃"/"肝"/"肺"这类单字器官别名）：
+    - 不改变英文 token 的既有 exact-match 行为，WR-04 记录的英文歧义器官
+      误命中风险不变、不放大
+    - 单字 CJK 器官别名仍只走 exact-match，不参与子串匹配，避免引入同等级别
+      的中文歧义误命中（"胃"单字出现在无关词组里的概率显著高于"胃癌"整词）
     """
     if not file_name:
         return []
     stem = Path(file_name).stem.lower()
     rev = _build_reverse_index(synonym_map)
     hits: set[str] = set()
-    for tok in _FILENAME_TOKEN_RE.split(stem):
-        tok = _normalize_token(tok)
+    tokens = [_normalize_token(t) for t in _FILENAME_TOKEN_RE.split(stem)]
+    for tok in tokens:
         if tok and tok in rev:
             hits.add(rev[tok])
+    # 子串匹配用轻量归一化（只 strip+lower，不做后缀剥离）的原始 alias 文本，
+    # 不能复用上面 exact-match 用的 rev（_build_reverse_index 对每个 alias
+    # 都跑过 _normalize_token 的后缀剥离循环）——"胃癌"这种 2 字符 alias
+    # 会被剥掉"癌"字退化成单字"胃"，长度检查会误判成单字器官别名而被排除，
+    # 反而让最常见的疾病名（胃癌/肝癌/肺癌）全部匹配不上。
+    #
+    # 边界必须是"alias 本身带不带疾病后缀"（癌/瘤/cancer/tumor/...），不能
+    # 只看长度：synonym_map 里同时收了裸器官名 alias（"胰腺"/"结肠"/"直肠"/
+    # "乳腺"/"宫颈"，2+ 字符但不带疾病后缀）——如果只按长度放行，会把
+    # "胰腺炎诊疗指南"误标成胰腺癌相关、"乳腺良性疾病指南"误标成乳腺癌相关
+    # （codex 对抗式审查实测复现）。只放行本身带疾病后缀的 alias（"胰腺癌"/
+    # "乳腺癌"会被单独列为 alias，仍能正常子串匹配），裸器官名 alias 完全
+    # 不参与子串匹配。
+    for tok in tokens:
+        if not tok:
+            continue
+        for canonical, aliases in synonym_map.items():
+            for alias in [canonical, *aliases]:
+                alias_lite = (alias or "").strip().lower()
+                if (
+                    len(alias_lite) >= 2
+                    and _CJK_RE.search(alias_lite)
+                    and _DISEASE_SUFFIX_RE.search(alias_lite)
+                    and alias_lite in tok
+                ):
+                    hits.add(canonical)
     return sorted(hits)
 
 
@@ -192,16 +270,27 @@ def filter_chunks_by_disease(
 ) -> list[dict]:
     """chunk 级后置过滤。
     - canonical_key=None → 全保留
-    - chunks_meta 无该 path key → 保留（KBM-06 兜底）
+    - chunks_meta 无该 path key（模糊匹配文件名后）→ 保留（KBM-06 兜底）
     - chunk.disease_tags 为空 → 保留（KBM-06 兜底）
     - canonical_key ∈ tags → 保留；否则丢弃
+
+    2026-07-02 修复：真实 hit["path"] 用 QMD 自己的文件名 slug（如
+    "CACA/caca-....md"），chunks_meta 的 key 是 build_sidecar() 落盘时用
+    "qmd://{org}/{Path.name}" 精确拼出来的（如 "qmd://caca/caca_....md"）——
+    两者标点/连字符/下划线/空格全不对齐，原来的精确 dict.get(path) 恒为
+    None，KBM-06"保留"兜底让这层过滤对真实数据完全形同虚设（这正是本 v3.1
+    milestone 最初要解决的"结直肠癌命中胃癌 chunk"问题的直接成因）。改用
+    _canonical_filename() 剥标点后按文件名模糊匹配。
     """
     if canonical_key is None:
         return list(hits)
+    canon_index = {
+        _canonical_filename(k): v for k, v in chunks_meta.items()
+    }
     out: list[dict] = []
     for hit in hits:
         path = hit.get("path", "")
-        meta = chunks_meta.get(path)
+        meta = canon_index.get(_canonical_filename(path))
         if meta is None:
             out.append(hit)
             continue

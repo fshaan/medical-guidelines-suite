@@ -17,6 +17,7 @@ import socket
 import subprocess
 import time
 from typing import Optional
+from pathlib import Path
 
 import httpx
 import requests
@@ -24,6 +25,10 @@ import requests
 
 class QMDStartupError(Exception):
     """QMD service failed to start."""
+
+
+class QMDQueryError(Exception):
+    """QMD tools/call request failed after exhausting retries (timeout/transport)."""
 
 
 _MCP_HEADERS = {
@@ -246,7 +251,15 @@ class AsyncQMDService:
         self.port = port or int(os.environ.get("QMD_PORT", "8181"))
         self.base_url = f"http://localhost:{self.port}/mcp"
         self._timeout = timeout_s
-        self._sem = semaphore or asyncio.Semaphore(8)   # D-03 默认 8
+        self._sem = semaphore or asyncio.Semaphore(8)   # D-03 默认 8（准入控制，见下）
+        # 2026-07-02 实测发现：qmd MCP server 的单个 session 不支持真正并发的
+        # tools/call——两个并发请求打到同一 session 时，一个正常返回，另一个
+        # 永远收不到响应（不是变慢，是卡死到读超时）。用两个独立 AsyncQMDService
+        # 实例（各自独立 session/进程）并发反而完全没问题，证实这是 session 级
+        # 限制而不是本类的语义 bug。self._sem 仍按调用方配置的并发数做准入控制
+        # （限制同时等待的调用数量），但真正打到 server 的 HTTP 往返用这把锁
+        # 强制串行，避免同一 session 上出现第二个在途请求。
+        self._session_lock = asyncio.Lock()
         self._http = http_client
         self._owns_http = http_client is None
         self.process: Optional[subprocess.Popen] = None
@@ -268,11 +281,22 @@ class AsyncQMDService:
 
     async def __aenter__(self) -> "AsyncQMDService":
         self._check_port_available()
-        self.process = subprocess.Popen(
-            ["qmd", "mcp", "--http", "--port", str(self.port)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        qmd_node = os.environ.get("QMD_NODE_BIN")
+        if qmd_node:
+            qmd_js = Path(__file__).resolve().parent.parent / "node_modules" / "@tobilu" / "qmd" / "dist" / "cli" / "qmd.js"
+            if not qmd_js.exists():
+                qmd_js = Path(os.environ.get("QMD_NODE_MODULE", "~/.local/lib/node_modules/@tobilu/qmd/dist/cli/qmd.js")).expanduser()
+            self.process = subprocess.Popen(
+                [qmd_node, str(qmd_js), "mcp", "--http", "--port", str(self.port)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            self.process = subprocess.Popen(
+                ["qmd", "mcp", "--http", "--port", str(self.port)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         if self._owns_http:
             self._http = httpx.AsyncClient(timeout=self._timeout)
         try:
@@ -357,27 +381,76 @@ class AsyncQMDService:
         self._session_id = resp.headers.get("mcp-session-id")
 
     async def _post_tools_call(self, payload: dict) -> list[dict]:
-        """POST tools/call with one re-initialize retry on session invalidation."""
-        resp = await self._http.post(
-            self.base_url,
-            headers=self._session_headers,
-            json=payload,
-            timeout=self._timeout,
-        )
-        # D-04: 仅 HTTP 400 视为 session invalid 触发 reinit。
-        # 不要把"响应缺 mcp-session-id header"当信号——MCP Streamable HTTP
-        # 协议仅 initialize 响应回带该 header，tools/call 正常响应通常不带，
-        # 误判会让每次 query 多发 2 次 HTTP（reinit + retry）。
-        if resp.status_code == 400:
-            await self._reinitialize_session()
-            resp = await self._http.post(
-                self.base_url,
-                headers=self._session_headers,
-                json=payload,
-                timeout=self._timeout,
-            )
-        resp.raise_for_status()
-        return QMDService._parse_mcp_response(resp.json())
+        """POST tools/call with one re-initialize retry on session invalidation,
+        plus up to 3 attempts with exponential backoff on transport-level errors
+        (timeout / connection failure).
+
+        2026-07-02 fix (round 1): a single slow/hung QMD response used to raise
+        a bare httpx.RequestError with no retry — that exception type was not
+        caught by any except clause in pipeline.py:_run_one_patient, so it
+        propagated out and was silently discarded by run_pipeline's
+        gather(..., return_exceptions=True) (whose result was never inspected).
+        A patient could burn a full 180s read-timeout and vanish with zero
+        trace in patients/ or _failed/.
+
+        2026-07-02 fix (round 2, codex 对抗式审查发现): round 1 kept the 180s
+        read timeout AND added 3 retries — worst case per query went from
+        "silent 180s disappearance" to "543s before QMDQueryError", which is
+        worse for the QG-01 wall-time SLA, not better. Real QMD query() calls
+        observed in isolation and under light concurrency complete in 0.4-5s
+        (see phase3_e2e_test_report_2026-07-02.md 附录); 180s was tuned for
+        MCP session _startup_ health-checks (_wait_for_ready_async), not for
+        steady-state per-query calls. Read timeout dropped to 30s here (6-10x
+        headroom over observed worst case) so a genuinely stuck call fails
+        fast enough for --resume to retry the patient instead of blocking the
+        whole batch for multiples of 180s.
+
+        2026-07-02 fix (round 3, real E2E run against spark reproduced this
+        reliably): even at 30s the real 10-patient run still had EVERY
+        patient fail — root cause isolated to two concurrent tools/call
+        requests sharing one MCP session: one gets a normal response, the
+        other never gets any response at all (full timeout, not "slow").
+        Two separate AsyncQMDService instances (separate sessions/processes)
+        running concurrently both succeeded fine, proving this is a session-
+        level limitation of the qmd server, not a semantic bug in this class.
+        The whole retry loop is now wrapped in self._session_lock so at most
+        one tools/call HTTP round trip is ever in flight against this
+        session at a time — self._sem still gates how many callers may be
+        *waiting*, this lock gates how many are *actually talking to qmd*.
+        """
+        async with self._session_lock:
+            last_error: Optional[Exception] = None
+            for attempt in range(3):
+                try:
+                    resp = await self._http.post(
+                        self.base_url,
+                        headers=self._session_headers,
+                        json=payload,
+                        timeout=httpx.Timeout(self._timeout, read=30),
+                    )
+                    # D-04: 仅 HTTP 400 视为 session invalid 触发 reinit。
+                    # 不要把"响应缺 mcp-session-id header"当信号——MCP Streamable HTTP
+                    # 协议仅 initialize 响应回带该 header，tools/call 正常响应通常不带，
+                    # 误判会让每次 query 多发 2 次 HTTP（reinit + retry）。
+                    if resp.status_code == 400:
+                        await self._reinitialize_session()
+                        resp = await self._http.post(
+                            self.base_url,
+                            headers=self._session_headers,
+                            json=payload,
+                            timeout=self._timeout,
+                        )
+                    resp.raise_for_status()
+                    return QMDService._parse_mcp_response(resp.json())
+                except httpx.RequestError as e:
+                    last_error = e
+                    if attempt < 2:
+                        await asyncio.sleep(1.0 * (2 ** attempt))
+                        continue
+                    break
+            raise QMDQueryError(
+                f"QMD tools/call failed after 3 attempts: {last_error}"
+            ) from last_error
 
     async def query(
         self, text: str, top_k: int = 10, min_score: float = 0.3
