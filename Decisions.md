@@ -111,3 +111,20 @@ pipeline.py `_run_one_patient` 中异常处理分三级：`LLMFailure` 写 `_fai
 **Why（共性根因）**：Phase 1-3 的单元测试 mock 了 QMD/LLM 的返回结构，但 mock 的 path 格式、chunks_meta key 格式、并发行为都跟真实部署不一致——三层过滤（org 级、chunk 级、零证据）对 mock 数据是 no-op，对真实数据全部失效，导致"单元测试全绿 + 真实 E2E 完全跑不出真实结果"。修复后新增的回归测试全部用真实 KB 文件名 / 真实 path 格式 / 真实并发复现场景。302 tests passing（+13 条针对本轮 bug 的回归测试）。
 
 **未修复、已记录**：vLLM `--max-num-seqs 4` 限制下 pipeline 并发需 ≤2 才稳定（已在 `docs/phase3_e2e_acceptance.md` 标注）；`max_tokens` 尚未 profile 化（`LLMProfile.from_env` 不读 yaml/env 的 max_tokens，改默认值影响所有 profile，留给后续）。
+
+## 2026-07-03 | max_tokens 超时根因三层定位 + Phase 3 E2E 验收通过（决定性测试 + codex 对抗审查）
+
+中断前假设"max_tokens=65536 太大导致退化"。决定性对比测试（`scripts/dev/max_tokens_probe.py`，同 prompt 不同 max_tokens，3 轮）+ codex 对抗式审查纠正了认知，定位**三层相互独立的问题**，各自治本：
+
+1. **退化（重复生成撞 max_tokens）**：随机触发，max_tokens 不决定是否退化、只影响爆炸半径（vLLM ~120 tok/s：8192→68s 快速失败 vs 65536→546s ReadTimeout）。27 hits 全文 prompt（11046 字）信息过载是诱因。胃癌 5/5 稳定退化，盲重试无效。
+   - 治本：`_select_diverse_hits` 按 org 保底精简到 ≤15（控上下文规模）+ 退化感知三档降级链（strict→精简hits+frequency_penalty→json_object 降级）+ `DegenerationError` 独立失败语义（不伪装 partial，QG-02 诚实）+ 全局 finish_reason=length/重复度检测。
+2. **strict 模式 string 字段"写不停"**：vLLM json_schema strict 下 recommendation（string，无强制闭合）持续生成到 max_tokens，finish=length 截断成非法 JSON。schema `maxLength` 在 xgrammar 后端**不强制闭合**（实测：简单 prompt 模型恰好写短"看起来生效"，复杂 prompt 仍写到 max_tokens；对比脚本 + E2E 双重验证）。这是中断前"截断 vs 退化"判断混淆的根源——2026-07-02 误判为"8192 截断"的，实际部分是 strict string 写不停。
+   - 治本：`structured_mode` 改 `json_object`（模型自由闭合，实测 13-20s 合法输出 ~1500 token），prompt 加 JSON 结构描述（json_object 模式必需）。
+3. **json_object 丢失 enum 强制**：模型输出 evidence_level 简写（"1A" 而非 "1A类"、"1类证据"）。
+   - 治本：`_normalize_evidence_level` 应用层归一化（前缀/去空白匹配 + 兜底"不适用"），`_parse_and_validate` 在 jsonschema.validate 前调用。
+
+**vLLM grammar 缓存坑**：vLLM 按 schema **name** 缓存编译后的 grammar，schema 内容变了（加 maxLength）但 name 不变会命中旧缓存。`_build_payload` 让 schema_name 带 schema 内容 hash 后缀（`patient_recommendation_<md5[:8]>`），schema 变则 name 变，强制重编译。
+
+**max_tokens profile 化**（2026-07-02 留待项已落地）：`LLMProfile.from_env` 接入 `LLM_MAX_TOKENS` env > yaml `max_tokens` > 默认 8192 三级优先级。默认从 65536 降到 8192（正常输出 ~1500 token 有余量，退化 68s 可控）。
+
+**结果**：E2E 10/10 OK，wall **205.9s**（<10min QG-01 达成，较 v3.0 的 ~60min 降 94%），36 条指南覆盖全部 5 组织，QG-01..05 全 PASS。配置：max_tokens 8192、timeout 90s、structured_mode json_object、concurrency-patients 2（vLLM `--max-num-seqs 4`）。

@@ -86,7 +86,7 @@
 **Plans:** 3 plans
 - [x] 03-01-PLAN.md — scripts/pipeline.py 核心(run_pipeline + _run_one_patient + 11 helpers,PIP-01..06) ✅
 - [x] 03-02-PLAN.md — scripts/batch_pipeline.py CLI 改造(run 子命令 + 4 hidden + validate/generate --patients-dir,CLI-01..05 + CFG-03) ✅
-- [x] 03-03-PLAN.md — 端到端 smoke E2E + 真实环境验收清单 + Sign-off checkpoint(QG-01..06) ✅ (checkpoint:human-verify 待签收)
+- [x] 03-03-PLAN.md — 端到端 smoke E2E + 真实环境验收清单 + Sign-off checkpoint(QG-01..06) ✅ (E2E 10/10 通过 2026-07-03, wall 205.9s)
 
 ### Phase 4: Delete Batch Concept + Rewrite Tests
 
@@ -119,7 +119,7 @@ Sequential execution. Phase 3 是关键性能 gate；Phase 4 显式延迟一周�
 |-------|----------------|--------|-----------|
 | 1. Async Retriever + KB Metadata Sidecar | 3/3 | ✅ Complete | 2026-05-12 |
 | 2. LLM Client + Schema + Unit Tests | 2/2 | ✅ Complete | 2026-05-12 |
-| 3. Pipeline + run + Interface Extension | 3/3 | ✅ Complete (checkpoint:human-verify pending) | 2026-05-12 |
+| 3. Pipeline + run + Interface Extension | 3/3 | ✅ Complete (E2E 10/10 OK, wall 205.9s) | 2026-07-03 |
 | 4. Delete Batch Concept + Rewrite Tests | 0/? | Not started | - |
 
 ## Coverage

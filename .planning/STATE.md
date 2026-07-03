@@ -3,10 +3,10 @@ gsd_state_version: 1.0
 milestone: v3.1
 milestone_name: milestone
 status: in-progress
-last_updated: "2026-05-12T10:38:49.000Z"
+last_updated: "2026-07-03T00:00:00.000Z"
 progress:
   total_phases: 4
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 8
   completed_plans: 8
   percent: 100
@@ -23,8 +23,8 @@ progress:
 ## Current Position
 
 - **Phase**: 3 — Pipeline + run Subcommand + Interface Extension
-- **Status**: Phase 3 全部 Plan 完成（Plan 01+02+03），等待真实环境 E2E 验收
-- **Progress**: `[██████████] 2/4 phases · 8/8 plans · 35/37 requirements delivered`
+- **Status**: ✅ Phase 3 E2E 验收通过（2026-07-03，10/10 OK，wall 205.9s，QG-01..05 全 PASS）。Phase 4 待 stabilize 一周后启动。
+- **Progress**: `[█████████ ] 3/4 phases · 8/8 plans · 37/37 requirements delivered`
 
 ## Performance Metrics
 
@@ -84,8 +84,8 @@ progress:
 
 ## Session Continuity
 
-- **本次会话**：2026-05-12 Phase 3 Plan 03 执行完成
-- **当前状态**：Phase 3 全部 3 个 Plan 完成（289 tests），等待用户真实环境 E2E 验收
+- **本次会话**：2026-07-03 Phase 3 E2E 验收通过（max_tokens 超时根因三层定位 + json_object + 归一化，见 Decisions.md）
+- **当前状态**：Phase 3 ship gate 达成（10/10 OK，wall 205.9s，319 tests passing）。Phase 4 待 stabilize 一周后启动。
 
 ---
-*Phase 3 Plan 03 completed: 2026-05-12*
+*Phase 3 E2E verified: 2026-07-03*
