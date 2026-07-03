@@ -167,7 +167,7 @@ async def test_fallback_attempt1_success():
     hits = [_mk_hit("CSCO/a.md", 0.9)]
     r, s, st, meta = await _llm_with_degeneration_fallback(llm, {"patient_id": "p"}, hits, "p")
     assert meta["attempt"] == 1
-    assert meta["mode"] == "strict"
+    assert meta["mode"] == "primary"
     assert st == "ok"
     assert llm.complete_structured_with_feedback.await_count == 1
 

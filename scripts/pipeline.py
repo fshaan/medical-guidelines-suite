@@ -359,7 +359,7 @@ async def _llm_with_degeneration_fallback(
         r, s, st = await llm.complete_structured_with_feedback(
             build_patient_prompt(patient, hits), schema, **fb_kw,
         )
-        return r, s, st, {"attempt": 1, "mode": "strict", "hits": len(hits), "penalty": 0.0}
+        return r, s, st, {"attempt": 1, "mode": "primary", "hits": len(hits), "penalty": 0.0}
     except DegenerationError:
         pass
     # 档2: 精简 hits + frequency_penalty 抑制重复
@@ -369,7 +369,7 @@ async def _llm_with_degeneration_fallback(
             build_patient_prompt(patient, hits2), schema,
             frequency_penalty=0.3, **fb_kw,
         )
-        return r, s, st, {"attempt": 2, "mode": "strict", "hits": len(hits2), "penalty": 0.3}
+        return r, s, st, {"attempt": 2, "mode": "primary", "hits": len(hits2), "penalty": 0.3}
     except DegenerationError:
         pass
     # 档3: strict→json_object 降级（应用层 jsonschema.validate 兜底）
