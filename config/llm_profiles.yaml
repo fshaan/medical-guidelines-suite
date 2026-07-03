@@ -9,9 +9,9 @@ profiles:
     model: qwen3.6-35b  # served-model-name；实际权重 /models/nvidia/Qwen3.6-35B-A3B-NVFP4（spark 主机验证于 2026-07-02）
     api_key_env: LLM_API_KEY
     timeout_s: 90  # 8192 退化 ~68s，90s 留余量；正常 ~11s（2026-07-03 决定性测试）
-    structured_mode: json_schema
+    structured_mode: json_object  # strict 的 string 字段会"写不停"到 max_tokens（xgrammar 不强制 maxLength）；json_object 让模型自由闭合，实测 13-20s 合法输出
     concurrency: 5
-    max_tokens: 8192  # 正常输出 ~1000 token 有 8x 余量；退化 68s 可控交由三档降级
+    max_tokens: 8192  # 正常输出 ~1500 token 有余量；退化 68s 可控交由三档降级
   deepseek-cloud:
     base_url: https://api.deepseek.com/v1
     model: deepseek-chat

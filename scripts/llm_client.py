@@ -9,6 +9,7 @@ PATIENT_RECOMMENDATION_SCHEMA with 27-item evidence_level enum.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -85,6 +86,36 @@ def _repetition_score(text: str) -> float:
     return 1.0 - len(set(chunks)) / len(chunks)
 
 
+def _normalize_evidence_level(value) -> str:
+    """把模型输出的 evidence_level 变体归一化到 schema enum。
+
+    json_object 模式丢失 strict 的 enum 强制（实测模型常输出 '1A' 而非 '1A类'、
+    '1类证据' 等简写）。前缀/去空白匹配到标准 enum；无法匹配兜底 '不适用'
+    （保 QG-04 enum 合法，语义损失可接受——模型本就该用标准 enum 值）。
+    """
+    if not isinstance(value, str) or value in _EVIDENCE_LEVEL_ENUM:
+        return value
+    for e in _EVIDENCE_LEVEL_ENUM:
+        if len(value) >= 2 and e.startswith(value):
+            return e
+    v = value.replace(" ", "").upper()
+    for e in _EVIDENCE_LEVEL_ENUM:
+        if e.replace(" ", "").upper() == v:
+            return e
+    return "不适用"
+
+
+def _normalize_result(parsed):
+    """归一化 PATIENT_RECOMMENDATION_SCHEMA 输出的 evidence_level 变体。
+    对非该 schema 的 parsed（如测试用的自由 schema）是 no-op。"""
+    if not isinstance(parsed, dict):
+        return parsed
+    for gr in parsed.get("guideline_results", []) or []:
+        if isinstance(gr, dict) and "evidence_level" in gr:
+            gr["evidence_level"] = _normalize_evidence_level(gr["evidence_level"])
+    return parsed
+
+
 _EVIDENCE_LEVEL_ENUM: list[str] = [
     # CSCO（8）
     "1A类", "1B类", "2A类", "2B类", "3类",
@@ -112,7 +143,7 @@ PATIENT_RECOMMENDATION_SCHEMA: dict = {
                         "enum": ["CSCO", "NCCN", "ESMO", "JGCA", "CACA"],
                     },
                     "guideline_version": {"type": "string", "minLength": 3},
-                    "recommendation": {"type": "string", "minLength": 30},
+                    "recommendation": {"type": "string", "minLength": 30, "maxLength": 600},
                     "evidence_level": {"type": "string", "enum": _EVIDENCE_LEVEL_ENUM},
                     "source_file": {"type": "string"},
                     "retrieval_sources": {
@@ -135,8 +166,8 @@ PATIENT_RECOMMENDATION_SCHEMA: dict = {
                 "additionalProperties": False,
             },
         },
-        "consensus": {"type": "array", "items": {"type": "string"}},
-        "differences": {"type": "array", "items": {"type": "string"}},
+        "consensus": {"type": "array", "items": {"type": "string", "maxLength": 150}},
+        "differences": {"type": "array", "items": {"type": "string", "maxLength": 150}},
     },
     "required": ["guideline_results", "consensus", "differences"],
     "additionalProperties": False,
@@ -296,10 +327,17 @@ class AsyncLLMClient:
             payload["frequency_penalty"] = frequency_penalty
         mode = structured_mode_override or self.profile.structured_mode
         if mode == "json_schema":
+            # schema_name 带 schema 内容 hash：vLLM 按 name 缓存编译后的 grammar，
+            # 若 schema 变了（如加 maxLength）但 name 不变，会命中旧缓存（实测：
+            # 加 maxLength 后仍用无 maxLength 的旧 grammar，导致 recommendation
+            # 写到 max_tokens 不闭合）。hash 后缀强制 schema 变化时重编译。
+            schema_hash = hashlib.md5(
+                json.dumps(schema, sort_keys=True, ensure_ascii=False).encode()
+            ).hexdigest()[:8]
             payload["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
-                    "name": schema_name,
+                    "name": f"{schema_name}_{schema_hash}",
                     "schema": schema,
                     "strict": True,
                 },
@@ -312,6 +350,7 @@ class AsyncLLMClient:
         try:
             content = response_json["choices"][0]["message"]["content"]
             parsed = json.loads(content)
+            _normalize_result(parsed)  # evidence_level 变体归一化（json_object 无 enum 强制）
             jsonschema.validate(parsed, schema)
             # 退化检测（2026-07-03 codex 审查）：finish=length 几乎总是模型
             # 重复生成撞 max_tokens 上限（正常输出 finish=stop）。即便 JSON

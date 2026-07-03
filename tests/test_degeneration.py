@@ -24,6 +24,15 @@ from scripts.llm_client import (
 )
 from scripts.pipeline import _llm_with_degeneration_fallback, _select_diverse_hits
 
+# 退化检测单测用独立 schema（无 maxLength），隔离 PATIENT_RECOMMENDATION_SCHEMA
+# 的长度约束，专门测 finish=length+高重复 的检测逻辑。
+_FREE_STRING_SCHEMA = {
+    "type": "object",
+    "properties": {"text": {"type": "string", "minLength": 30}},
+    "required": ["text"],
+    "additionalProperties": False,
+}
+
 
 # ── _repetition_score ───────────────────────────────────────────────────────
 
@@ -41,6 +50,19 @@ def test_repetition_score_diverse_text_low():
     # 每句不同，低重复
     text = "".join(f"这是第{i}句完全不同的内容用于测试多样性。" for i in range(40))
     assert _repetition_score(text) < 0.3
+
+
+# ── evidence_level 归一化（json_object 无 enum 强制）─────────────────────────
+
+def test_normalize_evidence_level_variants():
+    from scripts.llm_client import _normalize_evidence_level
+    assert _normalize_evidence_level("1A") == "1A类"      # 前缀匹配
+    assert _normalize_evidence_level("1B") == "1B类"
+    assert _normalize_evidence_level("2A") == "2A类"
+    assert _normalize_evidence_level("2B") == "2B类"
+    assert _normalize_evidence_level("1A类") == "1A类"    # 已合法原样
+    assert _normalize_evidence_level("Category 1") == "Category 1"
+    assert _normalize_evidence_level("1类证据") == "不适用"  # 无法匹配兜底
 
 
 # ── _select_diverse_hits ─────────────────────────────────────────────────────
@@ -93,25 +115,14 @@ def _mk_response(content: str, finish_reason: str, comp_tok: int = 9999) -> dict
 
 def _valid_result_json() -> str:
     repeat = "推" * 2000  # 大段重复，触发 _repetition_score > 0.5
-    return json.dumps({
-        "guideline_results": [{
-            "guideline": "CSCO",
-            "guideline_version": "2026 版",
-            "recommendation": repeat,
-            "evidence_level": "1A类",
-            "source_file": "csco.md",
-            "retrieval_sources": [{"source_file": "csco.md", "score": 0.9}],
-        }],
-        "consensus": ["共识一"],
-        "differences": ["差异一"],
-    }, ensure_ascii=False)
+    return json.dumps({"text": repeat}, ensure_ascii=False)
 
 
 def test_parse_flags_degeneration_on_length_and_repetition():
     client = _mk_client()
     resp = _mk_response(_valid_result_json(), finish_reason="length", comp_tok=8192)
     with pytest.raises(DegenerationError) as exc:
-        client._parse_and_validate(resp, PATIENT_RECOMMENDATION_SCHEMA, "pid1")
+        client._parse_and_validate(resp, _FREE_STRING_SCHEMA, "pid1")
     assert exc.value.finish_reason == "length"
     assert exc.value.completion_tokens == 8192
     assert exc.value.repetition > 0.5
@@ -121,25 +132,17 @@ def test_parse_passes_when_stop_even_if_long():
     # finish=stop + 长内容 → 不抛退化（正常完成）
     client = _mk_client()
     resp = _mk_response(_valid_result_json(), finish_reason="stop", comp_tok=1200)
-    parsed = client._parse_and_validate(resp, PATIENT_RECOMMENDATION_SCHEMA, "pid1")
-    assert parsed["guideline_results"][0]["guideline"] == "CSCO"
+    parsed = client._parse_and_validate(resp, _FREE_STRING_SCHEMA, "pid1")
+    assert parsed["text"].startswith("推")
 
 
 def test_parse_length_low_repetition_not_flagged():
     # finish=length 但低重复 → 不判退化（可能真截断，留给上层升档判断）
     client = _mk_client()
     diverse = "".join(f"第{i}句完全不同的多样化内容。" for i in range(40))
-    content = json.dumps({
-        "guideline_results": [{
-            "guideline": "NCCN", "guideline_version": "2026 版",
-            "recommendation": diverse, "evidence_level": "Category 1",
-            "source_file": "nccn.md",
-            "retrieval_sources": [{"source_file": "nccn.md", "score": 0.9}],
-        }],
-        "consensus": ["c"], "differences": ["d"],
-    }, ensure_ascii=False)
+    content = json.dumps({"text": diverse}, ensure_ascii=False)
     resp = _mk_response(content, finish_reason="length", comp_tok=4096)
-    parsed = client._parse_and_validate(resp, PATIENT_RECOMMENDATION_SCHEMA, "pid1")
+    parsed = client._parse_and_validate(resp, _FREE_STRING_SCHEMA, "pid1")
     assert parsed is not None  # 未抛退化
 
 

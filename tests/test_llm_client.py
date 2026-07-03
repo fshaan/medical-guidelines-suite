@@ -77,7 +77,7 @@ async def test_response_format_strict_schema_payload(profile, mock_http):
     rf = payload["response_format"]
     assert rf["type"] == "json_schema"
     assert rf["json_schema"]["strict"] is True
-    assert rf["json_schema"]["name"] == "patient_recommendation"
+    assert rf["json_schema"]["name"].startswith("patient_recommendation_")  # 带 schema hash 后缀（绕过 vLLM 缓存）
     assert rf["json_schema"]["schema"] is PATIENT_RECOMMENDATION_SCHEMA
 
 

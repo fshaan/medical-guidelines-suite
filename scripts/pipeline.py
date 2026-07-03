@@ -105,9 +105,11 @@ def build_patient_prompt(patient: dict, retrieval_hits: List[dict]) -> List[dict
         "- 输出 strict JSON，schema 由 response_format 强制\n"
         "- 每条 guideline_results 至少引用 2 个 retrieval_sources 编号 [n]\n"
         "- evidence_level 必须落在 schema enum 内\n"
-        "- consensus / differences 各列出 2-4 条\n"
+        "- 每条 recommendation ≤500 字，简明给出核心推荐与关键依据（schema maxLength=600 强制闭合）\n"
+        "- consensus / differences 各 2-3 条，每条 ≤120 字\n"
         "- 每条推荐一次性写完，禁止重复同一内容或循环生成\n"
-        "- 全部 user-facing 文本使用简体中文"
+        "- 全部 user-facing 文本使用简体中文\n"
+        "- JSON 结构：{\"guideline_results\":[{\"guideline\":\"CSCO|NCCN|ESMO|JGCA|CACA\",\"guideline_version\":\"版本\",\"recommendation\":\"≤500字推荐\",\"evidence_level\":\"证据级别\",\"source_file\":\"来源\",\"retrieval_sources\":[{\"source_file\":\"来源\",\"score\":0.9}]}],\"consensus\":[\"共识\"],\"differences\":[\"差异\"]}"
     )
     user_parts: List[str] = []
     user_parts.append(

@@ -84,19 +84,21 @@ async def get_messages(qmd, patient, synonym_map, chunks_meta, coverage):
 
 async def probe_one(http, messages, profile, max_tokens):
     """单次 vLLM 调用（绕过 AsyncLLMClient 重试，拿原始响应 + 精确耗时）。"""
+    import hashlib
+    _schema_hash = hashlib.md5(
+        json.dumps(PATIENT_RECOMMENDATION_SCHEMA, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()[:8]
+    structured_mode = os.environ.get("PROBE_MODE", "json_schema")
+    if structured_mode == "json_schema":
+        rf = {"type": "json_schema", "json_schema": {"name": f"probe_{_schema_hash}", "schema": PATIENT_RECOMMENDATION_SCHEMA, "strict": True}}
+    else:
+        rf = {"type": "json_object"}
     payload = {
         "model": profile.model,
         "messages": messages,
         "temperature": profile.temperature,
         "max_tokens": max_tokens,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "patient_recommendation",
-                "schema": PATIENT_RECOMMENDATION_SCHEMA,
-                "strict": True,
-            },
-        },
+        "response_format": rf,
     }
     headers = {"Content-Type": "application/json"}
     api_key = os.environ.get(profile.api_key_env, "")
@@ -125,8 +127,9 @@ async def probe_one(http, messages, profile, max_tokens):
         record["content_chars"] = len(content)
         record["repetition"] = round(repetition_score(content), 2)
         try:
-            json.loads(content)
+            parsed = json.loads(content)
             record["json_valid"] = True
+            record["rec_lens"] = [len(gr.get("recommendation", "")) for gr in parsed.get("guideline_results", [])]
         except json.JSONDecodeError:
             record["json_valid"] = False
         record["content_head"] = content[:120].replace("\n", " ")
